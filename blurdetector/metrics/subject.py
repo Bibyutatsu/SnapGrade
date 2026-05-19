@@ -1,8 +1,9 @@
-"""Subject detection: faces (MediaPipe) with saliency fallback (OpenCV).
+"""Subject detection: faces (OpenCV YuNet) + saliency fallback.
 
-Output is a list of subject bounding boxes in pixel coordinates of the input
-image. The first box, if any, is treated as the primary subject by the
-sharpness pipeline.
+YuNet is OpenCV's full-scene face detector — unlike MediaPipe BlazeFace it
+finds small / off-center / multi-scale faces in landscape and group shots,
+which is what we need for general photo culling. Returns the largest face as
+the primary subject so subject-aware sharpness focuses on the right thing.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from typing import Iterable
 import cv2
 import numpy as np
 
-_FACE_DETECTOR = None
+_YUNET = None
+_YUNET_INPUT_SIZE: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -23,35 +25,46 @@ class Subject:
     confidence: float
 
 
-def _face_detector():
-    global _FACE_DETECTOR
-    if _FACE_DETECTOR is None:
-        import mediapipe as mp
+def _yunet():
+    global _YUNET
+    if _YUNET is None:
+        from .. import models
 
-        _FACE_DETECTOR = mp.solutions.face_detection.FaceDetection(
-            model_selection=1,  # full-range model; better for non-selfie shots
-            min_detection_confidence=0.5,
+        path = models.ensure("yunet")
+        _YUNET = cv2.FaceDetectorYN.create(
+            str(path),
+            "",
+            input_size=(320, 320),
+            score_threshold=0.7,
+            nms_threshold=0.3,
+            top_k=50,
         )
-    return _FACE_DETECTOR
+    return _YUNET
 
 
-def detect_faces(rgb: np.ndarray) -> list[Subject]:
+def detect_faces(rgb: np.ndarray, score_threshold: float = 0.7) -> list[Subject]:
+    global _YUNET_INPUT_SIZE
     h, w = rgb.shape[:2]
-    res = _face_detector().process(rgb)
-    if not res.detections:
+    detector = _yunet()
+    if _YUNET_INPUT_SIZE != (w, h):
+        detector.setInputSize((w, h))
+        _YUNET_INPUT_SIZE = (w, h)
+    detector.setScoreThreshold(score_threshold)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    _, faces = detector.detect(bgr)
+    if faces is None:
         return []
     out: list[Subject] = []
-    for det in res.detections:
-        bb = det.location_data.relative_bounding_box
-        x = int(round(bb.xmin * w))
-        y = int(round(bb.ymin * h))
-        bw = int(round(bb.width * w))
-        bh = int(round(bb.height * h))
+    for f in faces:
+        x, y, bw, bh = (int(round(v)) for v in f[:4])
+        score = float(f[14])
+        x = max(0, x)
+        y = max(0, y)
+        bw = max(0, min(bw, w - x))
+        bh = max(0, min(bh, h - y))
         if bw <= 0 or bh <= 0:
             continue
-        score = float(det.score[0]) if det.score else 0.0
         out.append(Subject(bbox=(x, y, bw, bh), kind="face", confidence=score))
-    # Largest face first — that's the primary subject in most photos.
     out.sort(key=lambda s: s.bbox[2] * s.bbox[3], reverse=True)
     return out
 
@@ -61,12 +74,12 @@ def detect_saliency(rgb: np.ndarray) -> Subject | None:
     try:
         sal = cv2.saliency.StaticSaliencyFineGrained_create()
     except AttributeError:
-        # cv2.saliency is in opencv-contrib; if missing, fall back to a simple
-        # center-weighted crop covering the middle 60% of the frame.
         h, w = rgb.shape[:2]
-        x = int(w * 0.2)
-        y = int(h * 0.2)
-        return Subject(bbox=(x, y, int(w * 0.6), int(h * 0.6)), kind="saliency", confidence=0.1)
+        return Subject(
+            bbox=(int(w * 0.2), int(h * 0.2), int(w * 0.6), int(h * 0.6)),
+            kind="saliency",
+            confidence=0.1,
+        )
 
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     ok, sal_map = sal.computeSaliency(bgr)

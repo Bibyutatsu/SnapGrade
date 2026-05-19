@@ -83,16 +83,26 @@ def _read_pillow_exif(path: Path) -> Exif:
     with Image.open(path) as im:
         raw = im.getexif() or {}
 
+    # Top-level IFD0 holds Make/Model/Orientation/DateTime. Camera-specific
+    # fields (FNumber, ISO, ExposureTime, …) live in the Exif sub-IFD,
+    # which `getexif()` does NOT walk by default. Merge both here.
     tags: dict[str, Any] = {}
     for tag_id, value in raw.items():
-        name = ExifTags.TAGS.get(tag_id, str(tag_id))
-        tags[name] = value
+        tags[ExifTags.TAGS.get(tag_id, str(tag_id))] = value
+    try:
+        exif_ifd = raw.get_ifd(ExifTags.IFD.Exif)
+    except Exception:
+        exif_ifd = {}
+    for tag_id, value in (exif_ifd or {}).items():
+        tags[ExifTags.TAGS.get(tag_id, str(tag_id))] = value
 
     gps_info: dict[str, Any] = {}
-    if _GPS_TAG and _GPS_TAG in raw:
-        gps_raw = raw.get_ifd(_GPS_TAG) if hasattr(raw, "get_ifd") else raw[_GPS_TAG]
-        for k, v in (gps_raw or {}).items():
-            gps_info[ExifTags.GPSTAGS.get(k, str(k))] = v
+    try:
+        gps_raw = raw.get_ifd(ExifTags.IFD.GPSInfo)
+    except Exception:
+        gps_raw = raw.get(_GPS_TAG) if _GPS_TAG else None
+    for k, v in (gps_raw or {}).items():
+        gps_info[ExifTags.GPSTAGS.get(k, str(k))] = v
 
     capture_time = _parse_datetime(
         tags.get("DateTimeOriginal") or tags.get("DateTimeDigitized") or tags.get("DateTime")
@@ -103,13 +113,23 @@ def _read_pillow_exif(path: Path) -> Exif:
     if isinstance(flash, int):
         flash_fired = bool(flash & 1)
 
+    # ISO may be stored under ISOSpeedRatings (old) or PhotographicSensitivity (new).
+    iso_raw = tags.get("ISOSpeedRatings") or tags.get("PhotographicSensitivity")
+    iso_val: int | None
+    if isinstance(iso_raw, (int, float)):
+        iso_val = int(iso_raw)
+    elif isinstance(iso_raw, (tuple, list)) and iso_raw:
+        iso_val = int(iso_raw[0])
+    else:
+        iso_val = None
+
     return Exif(
         capture_time=capture_time,
         camera_make=(tags.get("Make") or "").strip() or None,
         camera_model=(tags.get("Model") or "").strip() or None,
         lens_model=(tags.get("LensModel") or "").strip() or None,
         focal_length_mm=_rational_to_float(tags.get("FocalLength")),
-        iso=int(tags["ISOSpeedRatings"]) if isinstance(tags.get("ISOSpeedRatings"), int) else None,
+        iso=iso_val,
         f_number=_rational_to_float(tags.get("FNumber")),
         exposure_time=_rational_to_float(tags.get("ExposureTime")),
         flash_fired=flash_fired,

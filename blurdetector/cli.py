@@ -40,6 +40,7 @@ def analyze(
     db_path: Path = typer.Option(None, "--db", help="SQLite DB path (default ~/.blurdetector/library.db)"),
     force: bool = typer.Option(False, "--force", help="Re-analyze even if cached"),
     max_edge: int = typer.Option(2000, "--max-edge", help="Long-edge size for analysis"),
+    workers: int = typer.Option(0, "--workers", help="Thread count (0 = auto)"),
 ) -> None:
     """Recursively analyze a folder of images."""
     rows: list[dict] = []
@@ -50,7 +51,8 @@ def analyze(
         console=console,
     ) as progress:
         task = progress.add_task("analyzing…", total=None)
-        for result in pipeline.analyze_folder(folder, db_path=db_path, force=force, max_edge=max_edge):
+        w = workers if workers > 0 else None
+        for result in pipeline.analyze_folder(folder, db_path=db_path, force=force, max_edge=max_edge, workers=w):
             progress.update(task, description=f"analyzed {result.path.name}")
             rows.append(
                 {

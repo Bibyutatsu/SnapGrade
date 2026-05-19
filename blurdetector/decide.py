@@ -105,11 +105,20 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     reasons: list[str] = []
     verdict = "keeper"
 
-    if sharp_score < t.sharp_reject:
+    # When a real face is the subject and its sharpness is poor, that's a
+    # reject even if Tenengrad on hair/fabric edges keeps the score in the
+    # review band. We only apply this override for face-subjects — for
+    # saliency fallback the bbox is too unreliable.
+    face_subject = any(s.get("kind") == "face" for s in (metrics.get("subjects") or []))
+    ss = subject_sharp or sharp
+    lap_val = ss.get("laplacian_var", 0.0)
+    aniso = ss.get("fft_anisotropy", 0.0)
+    soft_face = face_subject and subject_sharp is not None and lap_val < 50.0
+    blur_kind = "motion blur" if aniso > 0.45 else "out of focus"
+
+    if sharp_score < t.sharp_reject or (soft_face and sharp_score < t.sharp_keeper):
         verdict = "reject"
-        reasons.append(
-            "motion blur" if sharp.get("fft_anisotropy", 0) > 0.35 else "out of focus"
-        )
+        reasons.append(blur_kind)
     elif sharp_score < t.sharp_keeper:
         verdict = "review"
         reasons.append("slightly soft")

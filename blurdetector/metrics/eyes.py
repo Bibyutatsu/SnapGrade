@@ -1,7 +1,10 @@
-"""Eye openness / blink detection via MediaPipe FaceMesh + Eye Aspect Ratio.
+"""Eye openness / blink detection.
 
-Returns a list of per-face EAR values plus an aggregate `min_ear` and a flag
-`any_closed` triggered when any detected face is below the closed threshold.
+Strategy: YuNet finds faces at full-scene scale, then we crop each face (with
+padding) and feed the crop to MediaPipe FaceLandmarker — which is what
+landmarkers are designed for (a close-up of one face). The blendshape outputs
+`eyeBlinkLeft` and `eyeBlinkRight` (0=open, 1=fully closed) are the primary
+signal; classical EAR is computed from landmarks as a secondary check.
 """
 
 from __future__ import annotations
@@ -10,41 +13,48 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Landmark indices on the MediaPipe FaceMesh 468-point topology.
-# The 6 points used by the classic Soukupová–Čech EAR formulation:
-#   horizontal: p1, p4   vertical: (p2,p6) and (p3,p5)
+from . import subject
+
 LEFT_EYE_LMS = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE_LMS = (362, 385, 387, 263, 373, 380)
 
-CLOSED_THRESHOLD = 0.20  # Below this EAR, the eye is treated as closed.
+CLOSED_BLEND_THRESHOLD = 0.50
+CLOSED_EAR_THRESHOLD = 0.20
 
-_FACEMESH = None
+_LANDMARKER = None
 
 
 @dataclass(frozen=True)
 class EyeReport:
     faces: int
-    ears: tuple[float, ...]     # per-face min(left, right) EAR
+    ears: tuple[float, ...]
+    blinks: tuple[tuple[float, float], ...]
     min_ear: float | None
+    max_blink: float | None
     any_closed: bool
 
 
-def _facemesh():
-    global _FACEMESH
-    if _FACEMESH is None:
-        import mediapipe as mp
+def _landmarker():
+    global _LANDMARKER
+    if _LANDMARKER is None:
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
 
-        _FACEMESH = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=10,
-            refine_landmarks=False,
-            min_detection_confidence=0.5,
+        from .. import models
+
+        path = models.ensure("face_landmarker")
+        options = mp_vision.FaceLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(path)),
+            running_mode=mp_vision.RunningMode.IMAGE,
+            num_faces=1,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=False,
         )
-    return _FACEMESH
+        _LANDMARKER = mp_vision.FaceLandmarker.create_from_options(options)
+    return _LANDMARKER
 
 
 def _ear(pts: np.ndarray) -> float:
-    # pts shape: (6, 2) — order: p1..p6
     p1, p2, p3, p4, p5, p6 = pts
     horiz = np.linalg.norm(p1 - p4)
     if horiz < 1e-6:
@@ -54,23 +64,76 @@ def _ear(pts: np.ndarray) -> float:
     return float((v1 + v2) / (2.0 * horiz))
 
 
-def measure(rgb: np.ndarray) -> EyeReport:
-    h, w = rgb.shape[:2]
-    res = _facemesh().process(rgb)
-    if not res.multi_face_landmarks:
-        return EyeReport(faces=0, ears=(), min_ear=None, any_closed=False)
+def _blink_scores(blendshapes) -> tuple[float, float]:
+    left = right = 0.0
+    for cat in blendshapes:
+        if cat.category_name == "eyeBlinkLeft":
+            left = float(cat.score)
+        elif cat.category_name == "eyeBlinkRight":
+            right = float(cat.score)
+    return left, right
 
-    per_face: list[float] = []
-    for face in res.multi_face_landmarks:
-        lms = np.array([(lm.x * w, lm.y * h) for lm in face.landmark], dtype=np.float32)
+
+def _pad_crop(rgb: np.ndarray, bbox: tuple[int, int, int, int], pad: float = 0.4) -> np.ndarray:
+    h, w = rgb.shape[:2]
+    x, y, bw, bh = bbox
+    px = int(bw * pad)
+    py = int(bh * pad)
+    x0 = max(0, x - px)
+    y0 = max(0, y - py)
+    x1 = min(w, x + bw + px)
+    y1 = min(h, y + bh + py)
+    return rgb[y0:y1, x0:x1]
+
+
+def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeReport:
+    """Run blink detection on each detected face.
+
+    `faces` is optional — when caller already has YuNet results we avoid the
+    duplicate face-detection cost.
+    """
+    import mediapipe as mp
+
+    if faces is None:
+        faces = subject.detect_faces(rgb)
+    faces = [f for f in faces if f.kind == "face"]
+    if not faces:
+        return EyeReport(faces=0, ears=(), blinks=(), min_ear=None, max_blink=None, any_closed=False)
+
+    lm = _landmarker()
+    ears: list[float] = []
+    blinks: list[tuple[float, float]] = []
+    any_closed = False
+
+    for face in faces:
+        crop = _pad_crop(rgb, face.bbox, pad=0.4)
+        if crop.size == 0 or min(crop.shape[:2]) < 32:
+            continue
+        ch, cw = crop.shape[:2]
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop))
+        res = lm.detect(image)
+        if not res.face_landmarks:
+            continue
+        face_lms = res.face_landmarks[0]
+        lms = np.array([(p.x * cw, p.y * ch) for p in face_lms], dtype=np.float32)
         left = _ear(lms[list(LEFT_EYE_LMS)])
         right = _ear(lms[list(RIGHT_EYE_LMS)])
-        per_face.append(min(left, right))
+        ears.append(min(left, right))
 
-    min_ear = float(min(per_face)) if per_face else None
+        if res.face_blendshapes:
+            bl, br = _blink_scores(res.face_blendshapes[0])
+        else:
+            bl = br = 0.0
+        blinks.append((bl, br))
+
+        if max(bl, br) >= CLOSED_BLEND_THRESHOLD or min(left, right) < CLOSED_EAR_THRESHOLD:
+            any_closed = True
+
     return EyeReport(
-        faces=len(per_face),
-        ears=tuple(per_face),
-        min_ear=min_ear,
-        any_closed=any(e < CLOSED_THRESHOLD for e in per_face),
+        faces=len(ears),
+        ears=tuple(ears),
+        blinks=tuple(blinks),
+        min_ear=float(min(ears)) if ears else None,
+        max_blink=max((max(b) for b in blinks), default=None) if blinks else None,
+        any_closed=any_closed,
     )
