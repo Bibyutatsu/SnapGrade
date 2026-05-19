@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from . import db, group, organize, pipeline, xmp
+from . import db, events, group, organize, pipeline, report, xmp
 
 app = typer.Typer(help="BlurDetector — local photo triage and organizer.")
 console = Console()
@@ -146,6 +146,62 @@ def organize_cmd(
     written = organize.apply_plan(plan, mode=mode, dry_run=not apply)
     verb = "Would write" if not apply else f"Wrote ({mode})"
     console.print(f"{verb} [bold]{written}[/] entries.")
+
+
+@app.command("events")
+def events_cmd(
+    gap_hours: float = typer.Option(6.0, "--gap-hours"),
+    db_path: Path = typer.Option(None, "--db"),
+) -> None:
+    """Cluster images into events by capture-time gaps."""
+    conn = db.connect(db_path) if db_path else db.connect()
+    n = events.build(conn, gap_hours=gap_hours)
+    console.print(f"Built [bold]{n}[/] events.")
+
+
+@app.command("faces")
+def faces_cmd(
+    detect: bool = typer.Option(True, "--detect/--no-detect"),
+    cluster: bool = typer.Option(True, "--cluster/--no-cluster"),
+    threshold: float = typer.Option(0.45, "--threshold"),
+    db_path: Path = typer.Option(None, "--db"),
+) -> None:
+    """Detect faces (InsightFace) and greedy-cluster them across the library."""
+    from . import face_cluster
+
+    conn = db.connect(db_path) if db_path else db.connect()
+    cfg = face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+    if detect:
+        n = face_cluster.detect_and_store(conn, cfg)
+        console.print(f"Detected and stored [bold]{n}[/] new face embeddings.")
+    if cluster:
+        k = face_cluster.cluster(conn, cfg)
+        console.print(f"Formed [bold]{k}[/] face clusters.")
+
+
+@app.command("report")
+def report_cmd(
+    out: Path = typer.Argument(..., help="Output HTML path"),
+    verdict: str = typer.Option("keeper", "--verdict", help="Filter (keeper/review/reject/all)"),
+    db_path: Path = typer.Option(None, "--db"),
+) -> None:
+    """Render a contact-sheet HTML report."""
+    conn = db.connect(db_path) if db_path else db.connect()
+    v = None if verdict == "all" else verdict
+    n = report.render(conn, out, verdict=v)
+    console.print(f"Wrote [bold]{n}[/] cards → {out}")
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+) -> None:
+    """Run the FastAPI backend + UI."""
+    import uvicorn
+
+    uvicorn.run("blurdetector.api:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

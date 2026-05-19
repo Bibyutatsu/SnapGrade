@@ -128,8 +128,22 @@ def _stars(rec: Record) -> str:
 
 
 def _gps_country(rec: Record) -> str:
-    # Phase-2 ships GPS-aware tokens as a stub; reverse geocoding lands in Phase 4.
-    return "_unknown" if rec.get("gps_lat") is None else "geo-tagged"
+    from . import geocode
+
+    place = geocode.lookup(rec.get("gps_lat"), rec.get("gps_lon"))
+    return _safe(place.country) if place.country else "_unknown"
+
+
+def _gps_city(rec: Record) -> str:
+    from . import geocode
+
+    place = geocode.lookup(rec.get("gps_lat"), rec.get("gps_lon"))
+    return _safe(place.city) if place.city else "_unknown"
+
+
+def _event(rec: Record) -> str:
+    label = rec.get("event_label")
+    return _safe(label) if label else "_unknown"
 
 
 TOKENS: dict[str, Token] = {
@@ -149,6 +163,8 @@ TOKENS: dict[str, Token] = {
     "quality:verdict": _verdict,
     "quality:stars": _stars,
     "gps:country": _gps_country,
+    "gps:city": _gps_city,
+    "event": _event,
 }
 
 
@@ -173,12 +189,14 @@ class OrganizePlan:
 
 def _records_for_paths(conn: sqlite3.Connection, paths: list[str] | None) -> list[Record]:
     sql = (
-        "SELECT i.path, i.capture_time, i.camera_make, i.camera_model, i.lens_model, "
+        "SELECT i.id, i.path, i.capture_time, i.camera_make, i.camera_model, i.lens_model, "
         "i.focal_length_mm, i.iso, i.f_number, i.width, i.height, i.gps_lat, i.gps_lon, "
-        "v.verdict, v.stars, v.label, m.json AS metrics_json "
+        "v.verdict, v.stars, v.label, m.json AS metrics_json, e.label AS event_label "
         "FROM images i "
         "LEFT JOIN verdicts v ON v.image_id = i.id "
-        "LEFT JOIN metrics m ON m.image_id = i.id"
+        "LEFT JOIN metrics m ON m.image_id = i.id "
+        "LEFT JOIN event_members em ON em.image_id = i.id "
+        "LEFT JOIN events e ON e.id = em.event_id"
     )
     params: tuple = ()
     if paths:

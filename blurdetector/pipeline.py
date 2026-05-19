@@ -14,10 +14,10 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 from . import db, decide, decode, exif
-from .metrics import composition, exposure, eyes, noise, phash, sharpness, subject
+from .metrics import aesthetic, composition, exposure, eyes, noise, phash, sharpness, subject
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +54,6 @@ def analyze_one(path: Path, max_edge: int = 2000) -> AnalysisResult:
     img = decode.decode(path, max_edge=max_edge)
     rgb = img.rgb
 
-    ex = exif.read_exif(path)
     subjects = subject.detect_subjects(rgb)
     bbox = subject.primary_bbox(subjects)
 
@@ -65,6 +64,7 @@ def analyze_one(path: Path, max_edge: int = 2000) -> AnalysisResult:
     sigma = noise.estimate_sigma(rgb)
     comp = composition.measure(rgb, bbox)
     hashes = phash.compute(rgb)
+    aesthetic_score = aesthetic.score(rgb)
 
     metrics: dict[str, Any] = {
         "sharpness": _dc_to_dict(sharp_global),
@@ -73,6 +73,7 @@ def analyze_one(path: Path, max_edge: int = 2000) -> AnalysisResult:
         "exposure": _dc_to_dict(expo),
         "eyes": _dc_to_dict(eye_report),
         "noise_sigma": sigma,
+        "aesthetic_score": aesthetic_score,
         "composition": _dc_to_dict(comp),
         "hashes": _dc_to_dict(hashes),
         "source_size": [img.source_w, img.source_h],

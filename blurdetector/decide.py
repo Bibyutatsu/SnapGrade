@@ -28,10 +28,11 @@ class Thresholds:
     horizon_warn_deg: float = 3.0  # surfaces a warning, never auto-rejects
 
     # Weights for the combined "quality" score used to assign stars.
-    w_sharpness: float = 0.55
-    w_exposure: float = 0.20
-    w_eyes: float = 0.15
-    w_composition: float = 0.10
+    w_sharpness: float = 0.50
+    w_exposure: float = 0.18
+    w_eyes: float = 0.14
+    w_composition: float = 0.08
+    w_aesthetic: float = 0.10
 
 
 @dataclass
@@ -92,11 +93,13 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     eyes_score = _eyes_score(eyes)
     comp_score = _composition_score(comp)
 
+    aesthetic_score = metrics.get("aesthetic_score")
     score = (
         t.w_sharpness * sharp_score
         + t.w_exposure * exposure_score
         + t.w_eyes * eyes_score
         + t.w_composition * comp_score
+        + t.w_aesthetic * (aesthetic_score if aesthetic_score is not None else 0.5)
     )
 
     reasons: list[str] = []

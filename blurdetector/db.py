@@ -74,6 +74,19 @@ CREATE TABLE IF NOT EXISTS burst_members (
     is_best INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (burst_id, image_id)
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_members (
+    event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    image_id INTEGER REFERENCES images(id) ON DELETE CASCADE,
+    PRIMARY KEY (event_id, image_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_members_image ON event_members(image_id);
 """
 
 
