@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from . import db, pipeline, xmp
+from . import db, group, organize, pipeline, xmp
 
 app = typer.Typer(help="BlurDetector — local photo triage and organizer.")
 console = Console()
@@ -96,6 +96,56 @@ def write_xmp(
         )
         written += 1
     console.print(f"Wrote [bold]{written}[/] XMP sidecars.")
+
+
+@app.command("group")
+def group_cmd(
+    db_path: Path = typer.Option(None, "--db"),
+    hamming: int = typer.Option(10, "--hamming", help="Max phash hamming distance to merge"),
+    seconds: int = typer.Option(3, "--seconds", help="Max capture-time gap within a burst"),
+) -> None:
+    """Cluster bursts and pick the best frame per burst."""
+    conn = db.connect(db_path) if db_path else db.connect()
+    cfg = group.BurstConfig(hamming_threshold=hamming, time_window_seconds=seconds)
+    bursts = group.group_bursts(conn, cfg)
+    console.print(f"Found [bold]{len(bursts)}[/] bursts.")
+    for b in bursts:
+        console.print(f"  burst #{b.burst_id}: {len(b.image_ids)} frames, best = image #{b.best_image_id}")
+
+
+@app.command("tokens")
+def tokens_cmd() -> None:
+    """List available organizer tokens."""
+    for name in organize.list_tokens():
+        console.print(f"  {name}")
+
+
+@app.command("organize")
+def organize_cmd(
+    root: Path = typer.Argument(..., help="Destination root for the organized tree"),
+    levels: list[str] = typer.Option(
+        ...,
+        "--level",
+        "-l",
+        help="Organize token per level (repeat). Use `blurdetector tokens` to list.",
+    ),
+    db_path: Path = typer.Option(None, "--db"),
+    mode: str = typer.Option("symlink", "--mode", help="symlink | hardlink | copy | move"),
+    apply: bool = typer.Option(False, "--apply", help="Actually perform the operation (default is dry-run)"),
+    scope: Path = typer.Option(None, "--scope", help="Restrict to images under this folder"),
+) -> None:
+    """Build (and optionally apply) a hierarchical organizer plan."""
+    conn = db.connect(db_path) if db_path else db.connect()
+    paths = [str(p) for p in pipeline.walk_images(scope)] if scope else None
+    plan = organize.build_plan(conn, root, levels, paths)
+    console.print(f"[bold]Plan:[/] {plan.summary()}")
+    for entry in plan.entries[:20]:
+        console.print(f"  {entry.source.name} → {entry.target}")
+    if len(plan.entries) > 20:
+        console.print(f"  … and {len(plan.entries) - 20} more")
+    written = organize.apply_plan(plan, mode=mode, dry_run=not apply)
+    verb = "Would write" if not apply else f"Wrote ({mode})"
+    console.print(f"{verb} [bold]{written}[/] entries.")
 
 
 if __name__ == "__main__":
