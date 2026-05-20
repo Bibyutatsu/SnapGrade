@@ -68,15 +68,9 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
     # ML phase: YuNet and MediaPipe are not thread-safe — serialize.
     with _ML_LOCK:
         subjects = subject.detect_subjects(rgb)
-        eye_report = eyes.measure(rgb, faces=subjects)
-        aesthetic_score = aesthetic.score(rgb)
         extra: dict[str, Any] = {}
-        if "scene" in enabled:
-            try:
-                from .metrics import scene as _scene
-                extra["scene"] = _scene.analyze(rgb)
-            except Exception as e:  # pragma: no cover - opt-in
-                extra["scene_error"] = str(e)
+        # Run object/saliency models BEFORE blink so primaries can be
+        # disambiguated from a crowd by foreground signals.
         if "subject_seg" in enabled:
             try:
                 from .metrics import subject_seg as _ss
@@ -89,6 +83,29 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
                 extra["objects"] = _obj.analyze(rgb)
             except Exception as e:  # pragma: no cover
                 extra["objects_error"] = str(e)
+
+        salient_bbox = None
+        if isinstance(extra.get("subject_seg"), dict):
+            salient_bbox = extra["subject_seg"].get("bbox")
+        person_bboxes: list[list[int]] = []
+        if isinstance(extra.get("objects"), dict):
+            for d in extra["objects"].get("detections", []) or []:
+                if d.get("class") == "person" and d.get("bbox"):
+                    person_bboxes.append(d["bbox"])
+        primaries = subject.primary_subjects(
+            subjects, rgb.shape,
+            salient_bbox=salient_bbox,
+            person_bboxes=person_bboxes or None,
+        )
+
+        eye_report = eyes.measure(rgb, faces=primaries)
+        aesthetic_score = aesthetic.score(rgb)
+        if "scene" in enabled:
+            try:
+                from .metrics import scene as _scene
+                extra["scene"] = _scene.analyze(rgb)
+            except Exception as e:  # pragma: no cover - opt-in
+                extra["scene_error"] = str(e)
         if "screendoc" in enabled:
             try:
                 from .metrics import screendoc as _sd
@@ -96,18 +113,34 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
             except Exception as e:  # pragma: no cover
                 extra["screendoc_error"] = str(e)
 
-    bbox = subject.primary_bbox(subjects)
+    # Prefer the largest primary subject's bbox for subject-aware sharpness.
+    bbox = primaries[0].bbox if primaries else subject.primary_bbox(subjects)
     sharp_global = sharpness.measure(rgb)
     sharp_subject = sharpness.measure(rgb, bbox) if bbox else None
     expo = exposure.measure(rgb)
     sigma = noise.estimate_sigma(rgb)
     comp = composition.measure(rgb, bbox)
     hashes = phash.compute(rgb)
-
+    primary_set = {id(s) for s in primaries}
+    seen_ids = set()
+    subjects_dump = []
+    for s in subjects:
+        d = _dc_to_dict(s)
+        d["is_primary"] = id(s) in primary_set
+        subjects_dump.append(d)
+        seen_ids.add(id(s))
+    # Include any synthesised primary (e.g. person bbox from YOLO when no
+    # face was detected) so the UI renders something to focus on.
+    for s in primaries:
+        if id(s) in seen_ids:
+            continue
+        d = _dc_to_dict(s)
+        d["is_primary"] = True
+        subjects_dump.append(d)
     metrics: dict[str, Any] = {
         "sharpness": _dc_to_dict(sharp_global),
         "subject_sharpness": _dc_to_dict(sharp_subject) if sharp_subject else None,
-        "subjects": [_dc_to_dict(s) for s in subjects],
+        "subjects": subjects_dump,
         "exposure": _dc_to_dict(expo),
         "eyes": _dc_to_dict(eye_report),
         "noise_sigma": sigma,
@@ -115,6 +148,7 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
         "composition": _dc_to_dict(comp),
         "hashes": _dc_to_dict(hashes),
         "source_size": [img.source_w, img.source_h],
+        "decoded_size": [int(rgb.shape[1]), int(rgb.shape[0])],
         "kind": img.kind,
     }
     metrics.update(extra)

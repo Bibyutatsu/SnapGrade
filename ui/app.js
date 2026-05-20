@@ -96,7 +96,22 @@ function Sidebar({ tab, setTab, stats }) {
         <div class="row"><span>Frames</span><span class="num">${pad(stats?.images, 5)}</span></div>
         <div class="row"><span>Bursts</span><span class="num">${pad(stats?.bursts, 4)}</span></div>
         ${stats?.ingest?.running && html`
-          <div class="live">Ingest · ${stats.ingest.done}</div>`}
+          <div class="live">Ingest · ${stats.ingest.folder?.split("/").pop() || ""}</div>
+          ${(() => {
+            const { done, total } = stats.ingest;
+            const pct = total && total > 0 ? Math.min(100, Math.round(100 * done / total)) : null;
+            return html`
+              <div class="progress-track">
+                ${pct == null
+                  ? html`<div class="progress-indeterminate"></div>`
+                  : html`<div class="progress-fill" style=${{ width: pct + "%" }}></div>`}
+              </div>
+              <div class="progress-label">
+                <span>${done}${total ? ` / ${total}` : ""} frames</span>
+                <span>${pct == null ? "scanning" : pct + "%"}</span>
+              </div>`;
+          })()}
+        `}
       </div>
     </aside>
   `;
@@ -116,26 +131,68 @@ function TopBar({ tab, frameNo }) {
   `;
 }
 
-function ModelChecklist({ models, selected, setSelected }) {
+function ModelChecklist({ models, selected, setSelected, downloadState, onRefresh }) {
+  const [downloading, setDownloading] = useState(null);
+  const [customUrl, setCustomUrl] = useState({});
+
+  async function download(name, urlOverride) {
+    setDownloading(name);
+    try {
+      const qs = urlOverride ? `?url=${encodeURIComponent(urlOverride)}` : "";
+      await api(`/api/models/${name}/download${qs}`, { method: "POST" });
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setDownloading(null);
+      setTimeout(onRefresh, 1000);
+    }
+  }
+
   if (!models?.length) return null;
+  const dlActive = downloadState?.running;
   return html`
     <div class="model-checklist">
-      <div class="label">Optional models · drop weights into ~/.blurdetector/models/</div>
+      <div class="label">Optional models · weights live in ~/.blurdetector/models/</div>
       ${models.map((m) => {
         const info = MODEL_INFO[m.name] || { label: m.name, note: "" };
         const isOn = selected.includes(m.name);
+        const hasUrl = !!m.download_url;
+        const isDownloadingThis = dlActive && downloadState.model === m.name;
         return html`
-          <label key=${m.name} class=${m.available ? "" : "unavail"}>
-            <input type="checkbox" checked=${isOn} disabled=${!m.available}
-                   onChange=${(e) => {
-                     if (e.target.checked) setSelected([...selected, m.name]);
-                     else setSelected(selected.filter((n) => n !== m.name));
-                   }} />
-            <span>${info.label}</span>
-            <span class="note">— ${m.available ? info.note : "no weights found"}</span>
-          </label>
+          <div key=${m.name}>
+            <label class=${m.available ? "" : "unavail"}>
+              <input type="checkbox" checked=${isOn} disabled=${!m.available}
+                     onChange=${(e) => {
+                       if (e.target.checked) setSelected([...selected, m.name]);
+                       else setSelected(selected.filter((n) => n !== m.name));
+                     }} />
+              <span>${info.label}</span>
+              <span class="note">— ${m.available ? info.note : (isDownloadingThis ? "downloading…" : "no weights found")}</span>
+              ${!m.available && !isDownloadingThis && html`
+                <button class="chip" style=${{ marginLeft: "auto", padding: "3px 10px" }}
+                        disabled=${dlActive}
+                        onClick=${() => download(m.name, customUrl[m.name])}>
+                  ${hasUrl ? "Download" : "Need URL"}
+                </button>`}
+            </label>
+            ${isDownloadingThis && html`
+              <div class="progress-track" style=${{ marginLeft: "28px", marginTop: "4px" }}>
+                ${downloadState.total
+                  ? html`<div class="progress-fill" style=${{ width: Math.min(100, 100 * downloadState.downloaded / downloadState.total) + "%" }}></div>`
+                  : html`<div class="progress-indeterminate"></div>`}
+              </div>`}
+            ${!m.available && !hasUrl && !isDownloadingThis && html`
+              <div style=${{ marginLeft: "28px", marginTop: "4px", display: "flex", gap: "6px" }}>
+                <input class="input" style=${{ padding: "4px 8px", fontSize: "10px" }}
+                       placeholder=${`paste URL or drop file at ~/.blurdetector/models/${m.filename || m.name}`}
+                       value=${customUrl[m.name] || ""}
+                       onChange=${(e) => setCustomUrl({ ...customUrl, [m.name]: e.target.value })} />
+              </div>`}
+          </div>
         `;
       })}
+      ${downloadState?.error && html`
+        <div class="toast" style=${{ color: "var(--safelight)" }}>Download error: ${downloadState.error}</div>`}
     </div>
   `;
 }
@@ -160,6 +217,16 @@ function LibrariesCard({ libraries, models, refresh }) {
     setRunOpen(null); setRunSel([]);
     emitChange();
     refresh?.();
+  }
+
+  async function sync(id) {
+    try {
+      const r = await api(`/api/libraries/${id}/sync`, { method: "POST" });
+      // Toast handled by parent emitting change → ingest progress shows in sidebar.
+      emitChange();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   if (!libraries?.length) {
@@ -213,6 +280,7 @@ function LibrariesCard({ libraries, models, refresh }) {
                 </div>`}
             </div>
             <div class="actions">
+              <button class="btn ghost" onClick=${() => sync(lib.id)} title="Re-scan folder: add new files, remove missing, re-run same models">Sync</button>
               <button class="btn danger" onClick=${() => setConfirmId(lib.id)}>Remove</button>
             </div>
             ${confirmId === lib.id && html`
@@ -242,24 +310,32 @@ function LibraryTab({ stats, refreshStats }) {
   const [models, setModels] = useState([]);
   const [selectedModels, setSelectedModels] = useState([]);
   const [libraries, setLibraries] = useState([]);
+  const [downloadState, setDownloadState] = useState({ running: false });
 
   const loadLibs = useCallback(async () => {
     try {
       const r = await api("/api/libraries");
       setLibraries(r.items);
-      setModels(r.available_models || []);
     } catch {}
   }, []);
 
-  useEffect(() => { loadLibs(); }, [loadLibs]);
-  useBusEffect(() => { loadLibs(); }, [loadLibs]);
+  const loadModels = useCallback(async () => {
+    try {
+      const r = await api("/api/models");
+      setModels(r.models || []);
+      setDownloadState(r.download_state || { running: false });
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadLibs(); loadModels(); }, [loadLibs, loadModels]);
+  useBusEffect(() => { loadLibs(); loadModels(); }, [loadLibs, loadModels]);
   useEffect(() => {
-    // While ingest is running, the libraries card needs to refresh.
-    if (stats?.ingest?.running) {
-      const t = setInterval(loadLibs, 1500);
+    // While ingest or a model download is running, the cards need to refresh.
+    if (stats?.ingest?.running || downloadState?.running) {
+      const t = setInterval(() => { loadLibs(); loadModels(); }, 1500);
       return () => clearInterval(t);
     }
-  }, [stats?.ingest?.running, loadLibs]);
+  }, [stats?.ingest?.running, downloadState?.running, loadLibs, loadModels]);
 
   async function selectFolder() {
     setMsg("");
@@ -297,7 +373,8 @@ function LibraryTab({ stats, refreshStats }) {
             <button class="btn ghost" onClick=${selectFolder}>Choose folder…</button>
             <button class="btn primary" disabled=${!canIngest} onClick=${ingest}>Develop</button>
           </div>
-          <${ModelChecklist} models=${models} selected=${selectedModels} setSelected=${setSelectedModels} />
+          <${ModelChecklist} models=${models} selected=${selectedModels} setSelected=${setSelectedModels}
+                             downloadState=${downloadState} onRefresh=${loadModels} />
           ${msg && html`<div class="toast">${msg}</div>`}
         </div>
 
@@ -353,6 +430,26 @@ function DetailPanel({ image, onVerdict, onOpenLightbox }) {
 
   const verdicts = ["keeper", "review", "reject"];
   const [xmpMsg, setXmpMsg] = useState("");
+  const [showBboxes, setShowBboxes] = useState(true);
+
+  const subjects = image.metrics?.subjects || [];
+  const decoded = image.metrics?.decoded_size; // [w, h] of the analyzed image
+
+  function bboxStyle(s) {
+    if (!decoded || !s.bbox) return { display: "none" };
+    const [dw, dh] = decoded;
+    const [x, y, w, h] = s.bbox;
+    return {
+      position: "absolute",
+      left:  (100 * x / dw) + "%",
+      top:   (100 * y / dh) + "%",
+      width: (100 * w / dw) + "%",
+      height:(100 * h / dh) + "%",
+      border: `2px solid ${s.is_primary ? "var(--rust)" : "var(--mute)"}`,
+      pointerEvents: "none",
+      boxSizing: "border-box",
+    };
+  }
 
   async function writeXmp() {
     setXmpMsg("writing...");
@@ -367,11 +464,28 @@ function DetailPanel({ image, onVerdict, onOpenLightbox }) {
 
   return html`
     <aside class="detail">
-      <div class="preview-wrap" style=${{ cursor: "zoom-in" }} onClick=${onOpenLightbox}>
+      <div class="preview-wrap" style=${{ cursor: "zoom-in", position: "relative" }} onClick=${onOpenLightbox}>
         <div class="corners"></div>
         <div class="tl"></div>
         <div class="br"></div>
         <img src=${`/api/images/${image.id}/preview`} />
+        ${showBboxes && subjects.map((s, i) => html`
+          <div key=${i} style=${bboxStyle(s)}>
+            <span style=${{
+              position: "absolute", top: "-18px", left: "0",
+              fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase",
+              padding: "1px 6px",
+              background: s.is_primary ? "var(--rust)" : "var(--mute)",
+              color: "var(--ink)",
+            }}>${s.is_primary ? "subj" : s.kind}${s.confidence ? ` ${(s.confidence*100|0)}` : ""}</span>
+          </div>
+        `)}
+      </div>
+      <div style=${{ padding: "4px 24px", display: "flex", justifyContent: "flex-end", borderBottom: "1px solid var(--hair)" }}>
+        <label class="micro" style=${{ cursor: "pointer", display: "flex", alignItems: "center", gap: "8px" }}>
+          <input type="checkbox" checked=${showBboxes} onChange=${(e) => setShowBboxes(e.target.checked)} />
+          subject bboxes
+        </label>
       </div>
       <div class="body">
         <div class="path">${image.path}</div>
@@ -620,10 +734,10 @@ function TriageTab() {
           <button class="btn ghost" style=${{ padding: "6px 12px", fontSize: "10px" }} onClick=${regroupBursts}>Re-cluster Bursts</button>
 
           <div class="keys" style=${{ marginLeft: "auto" }}>
-            <kbd>J</kbd><kbd>K</kbd> navigate &nbsp;·&nbsp;
-            <kbd>Z</kbd> keep &nbsp;·&nbsp;
-            <kbd>C</kbd> review &nbsp;·&nbsp;
-            <kbd>X</kbd> reject &nbsp;·&nbsp;
+            <kbd>J</kbd><kbd>K</kbd> navigate ${" · "}
+            <kbd>Z</kbd> keep ${" · "}
+            <kbd>C</kbd> review ${" · "}
+            <kbd>X</kbd> reject ${" · "}
             <kbd>1</kbd>—<kbd>5</kbd> stars
           </div>
         </div>

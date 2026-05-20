@@ -208,7 +208,20 @@ def delete_library(conn: sqlite3.Connection, library_id: int) -> dict[str, int]:
     with transaction(conn):
         conn.execute("DELETE FROM images WHERE library_id=?", (library_id,))
         conn.execute("DELETE FROM libraries WHERE id=?", (library_id,))
+    cleanup_orphan_bursts(conn)
     return counts
+
+
+def cleanup_orphan_bursts(conn: sqlite3.Connection) -> int:
+    """Drop bursts whose members were all removed (e.g. by cascading image deletes).
+
+    The burst_members FK cascades on image delete, so empty bursts are left
+    behind. This sweeps them out and returns the count removed.
+    """
+    cur = conn.execute(
+        "DELETE FROM bursts WHERE id NOT IN (SELECT DISTINCT burst_id FROM burst_members)"
+    )
+    return cur.rowcount or 0
 
 
 def set_library_models(

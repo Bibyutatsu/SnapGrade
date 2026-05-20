@@ -17,6 +17,18 @@ import numpy as np
 _YUNET = None
 _YUNET_INPUT_SIZE: tuple[int, int] | None = None
 
+# Minimum bbox area (fraction of image) for a face to count as a primary
+# subject at all. Below this, the largest face is too small to trust even if
+# it's the only detected face.
+MIN_FACE_AREA_RATIO = 0.0005
+# Other faces within this fraction of the largest face's area are co-primary
+# (e.g. a couple shot — both faces the same size).
+SIMILAR_SIZE_RATIO = 0.55
+# When >= this many faces are within SIMILAR_SIZE_RATIO of the largest, the
+# scene is treated as a crowd unless an optional model (salient seg / person
+# detector) disambiguates one face as foreground.
+CROWD_CLUSTER_SIZE = 3
+
 
 @dataclass(frozen=True)
 class Subject:
@@ -109,3 +121,99 @@ def primary_bbox(subjects: Iterable[Subject]) -> tuple[int, int, int, int] | Non
     for s in subjects:
         return s.bbox
     return None
+
+
+def _bbox_overlap_ratio(face_bbox: tuple[int, int, int, int], region: list[int] | tuple[int, int, int, int]) -> float:
+    """Fraction of the face bbox that falls inside the region (x0,y0,x1,y1)."""
+    fx, fy, fw, fh = face_bbox
+    fx1, fy1 = fx + fw, fy + fh
+    rx0, ry0, rx1, ry1 = region
+    ix0, iy0 = max(fx, rx0), max(fy, ry0)
+    ix1, iy1 = min(fx1, rx1), min(fy1, ry1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    inter = iw * ih
+    face_area = max(fw * fh, 1)
+    return inter / face_area
+
+
+def _person_bbox_to_xyxy(b: list[int]) -> tuple[int, int, int, int]:
+    return int(b[0]), int(b[1]), int(b[2]), int(b[3])
+
+
+def primary_subjects(
+    subjects: list[Subject],
+    image_shape: tuple[int, int] | tuple[int, int, int],
+    min_area_ratio: float = MIN_FACE_AREA_RATIO,
+    similar_size_ratio: float = SIMILAR_SIZE_RATIO,
+    crowd_cluster_size: int = CROWD_CLUSTER_SIZE,
+    salient_bbox: list[int] | None = None,
+    person_bboxes: list[list[int]] | None = None,
+) -> list[Subject]:
+    """Pick which detected subjects drive downstream rules (sharpness, blink).
+
+    Reasoning:
+      - Single face → that's the subject, even if small, as long as it clears
+        the absolute minimum size (otherwise the detection is likely noise).
+      - Couple / small group of similar-sized faces (2) → both are primary.
+      - Crowd (>= CROWD_CLUSTER_SIZE faces of similar size) → no primary
+        subject; the scene is treated as a landscape with people in it,
+        so we don't run closed-eye verdicts on incidental crowd faces.
+      - Mixed sizes (one big face + several small ones) → only the big face
+        is primary; the small ones are background.
+    """
+    h = image_shape[0]
+    w = image_shape[1]
+    img_area = max(h * w, 1)
+
+    # Build a list of "foreground regions" from optional model signals. Any
+    # face whose centre falls inside one of these is promoted to primary even
+    # if it would otherwise be classified as crowd or too-small.
+    fg_regions: list[tuple[int, int, int, int]] = []
+    if salient_bbox and len(salient_bbox) == 4:
+        fg_regions.append(_person_bbox_to_xyxy(salient_bbox))
+    if person_bboxes:
+        # Use only the largest person bbox; secondary people are background.
+        sized = sorted(
+            (_person_bbox_to_xyxy(b) for b in person_bboxes if len(b) >= 4),
+            key=lambda r: (r[2] - r[0]) * (r[3] - r[1]),
+            reverse=True,
+        )
+        if sized:
+            fg_regions.append(sized[0])
+
+    faces = [s for s in subjects if s.kind == "face"] if subjects else []
+    if not faces:
+        # No face detector hit. If a model identified a foreground region,
+        # synthesise a Subject from the largest such region so downstream code
+        # still has something to focus on.
+        if fg_regions:
+            r = max(fg_regions, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+            return [Subject(
+                bbox=(r[0], r[1], r[2] - r[0], r[3] - r[1]),
+                kind="person",
+                confidence=0.5,
+            )]
+        if subjects:
+            return [subjects[0]]
+        return []
+
+    faces = sorted(faces, key=lambda s: s.bbox[2] * s.bbox[3], reverse=True)
+    largest_area = faces[0].bbox[2] * faces[0].bbox[3]
+
+    # When a foreground region is known, faces that fall inside it are the
+    # primaries; we don't second-guess via size clustering in that case.
+    if fg_regions:
+        inside = [
+            f for f in faces
+            if any(_bbox_overlap_ratio(f.bbox, r) > 0.5 for r in fg_regions)
+        ]
+        if inside:
+            return inside
+
+    if largest_area / img_area < min_area_ratio:
+        return []
+    cutoff = largest_area * similar_size_ratio
+    cluster = [f for f in faces if (f.bbox[2] * f.bbox[3]) >= cutoff]
+    if len(cluster) >= crowd_cluster_size:
+        return []
+    return cluster

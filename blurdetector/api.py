@@ -51,7 +51,10 @@ def stats() -> dict[str, Any]:
     by_verdict = conn.execute(
         "SELECT verdict, COUNT(*) AS c FROM verdicts GROUP BY verdict"
     ).fetchall()
-    bursts = conn.execute("SELECT COUNT(*) AS c FROM bursts").fetchone()["c"]
+    bursts = conn.execute(
+        "SELECT COUNT(*) AS c FROM bursts b "
+        "WHERE EXISTS(SELECT 1 FROM burst_members bm WHERE bm.burst_id = b.id)"
+    ).fetchone()["c"]
     libraries_count = int(conn.execute("SELECT COUNT(*) AS c FROM libraries").fetchone()["c"])
 
     return {
@@ -96,6 +99,50 @@ def list_libraries_endpoint() -> dict[str, Any]:
     return {"items": items, "available_models": _available_models()}
 
 
+@app.post("/api/libraries/{library_id}/sync")
+def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]:
+    """Reconcile a library with disk: add new files, drop missing files, re-run the
+    same model set that was previously applied to the library."""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT root_path, models_run FROM libraries WHERE id=?", (library_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "library not found")
+    if INGEST_STATE["running"]:
+        raise HTTPException(409, "ingest already running")
+    root = Path(row["root_path"])
+    if not root.is_dir():
+        raise HTTPException(410, f"library root no longer exists: {root}")
+    models_run = json.loads(row["models_run"] or "{}")
+    model_list = list(models_run.keys())
+
+    # Drop DB rows whose files no longer exist on disk.
+    existing = {str(p) for p in pipeline.walk_images(root)}
+    catalogued = conn.execute(
+        "SELECT id, path FROM images WHERE library_id=?", (library_id,)
+    ).fetchall()
+    to_drop = [int(r["id"]) for r in catalogued if r["path"] not in existing]
+    if to_drop:
+        placeholders = ",".join("?" for _ in to_drop)
+        conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", to_drop)
+        db.cleanup_orphan_bursts(conn)
+
+    def _run() -> None:
+        total = _count_supported_files(root)
+        INGEST_STATE.update(running=True, folder=str(root), done=0, total=total, error=None)
+        try:
+            for _ in pipeline.analyze_folder(root, models=model_list, library_id=library_id):
+                INGEST_STATE["done"] += 1
+        except Exception as e:
+            INGEST_STATE["error"] = str(e)
+        finally:
+            INGEST_STATE["running"] = False
+
+    background.add_task(_run)
+    return {"started": True, "removed": len(to_drop), "models": model_list}
+
+
 @app.delete("/api/libraries/{library_id}")
 def remove_library(library_id: int) -> dict[str, Any]:
     conn = _conn()
@@ -121,7 +168,8 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
     db.set_library_models(conn, library_id, models_pending=models)
 
     def _run() -> None:
-        INGEST_STATE.update(running=True, folder=str(root), done=0, total=None, error=None)
+        total = _count_supported_files(root)
+        INGEST_STATE.update(running=True, folder=str(root), done=0, total=total, error=None)
         try:
             for _ in pipeline.analyze_folder(root, models=models, library_id=library_id, force=True):
                 INGEST_STATE["done"] += 1
@@ -144,6 +192,29 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
 
 _AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
 
+# Best-effort public URLs for small model weights. None means "no known public
+# source"; the user can supply one via the `url` query param to /download.
+MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
+    "subject_seg": {
+        "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
+        "filename": "u2netp.onnx",
+    },
+    "objects": {
+        "url": "https://huggingface.co/Xenova/yolov8n/resolve/main/onnx/model.onnx",
+        "filename": "yolov8n.onnx",
+    },
+    "scene": {
+        "url": "",  # Places365 CoreML / ONNX not reliably hosted; user must supply.
+        "filename": "places365.mlpackage",
+    },
+    "screendoc": {
+        "url": "",  # No reliable public model; heuristic fallback ships in-tree.
+        "filename": "screendoc.mlpackage",
+    },
+}
+
+DOWNLOAD_STATE: dict[str, Any] = {"running": False, "model": None, "downloaded": 0, "total": None, "error": None}
+
 
 def _available_models() -> list[dict[str, Any]]:
     """Probe each optional model module for availability."""
@@ -160,7 +231,68 @@ def _available_models() -> list[dict[str, Any]]:
 
 @app.get("/api/models")
 def list_available_models() -> dict[str, Any]:
-    return {"models": _available_models()}
+    out = []
+    for m in _available_models():
+        info = MODEL_DOWNLOAD_URLS.get(m["name"], {})
+        out.append({
+            **m,
+            "download_url": info.get("url", ""),
+            "filename": info.get("filename", ""),
+        })
+    return {"models": out, "download_state": DOWNLOAD_STATE}
+
+
+@app.post("/api/models/{name}/download")
+def download_model(name: str, background: BackgroundTasks, url: str | None = Query(None)) -> dict[str, Any]:
+    if name not in _AVAILABLE_MODEL_NAMES:
+        raise HTTPException(404, f"unknown model: {name}")
+    info = MODEL_DOWNLOAD_URLS.get(name, {})
+    fetch_url = url or info.get("url", "")
+    filename = info.get("filename", f"{name}.bin")
+    if not fetch_url:
+        raise HTTPException(
+            400,
+            f"No public URL is registered for '{name}'. Pass ?url=... to specify one, "
+            f"or drop the weights at ~/.blurdetector/models/{filename} manually.",
+        )
+    if DOWNLOAD_STATE["running"]:
+        raise HTTPException(409, "another model download is in progress")
+    dest = Path.home() / ".blurdetector" / "models" / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    def _run() -> None:
+        import urllib.request
+        DOWNLOAD_STATE.update(running=True, model=name, downloaded=0, total=None, error=None)
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            def hook(blocks: int, block_size: int, total: int) -> None:
+                DOWNLOAD_STATE["downloaded"] = blocks * block_size
+                if total > 0:
+                    DOWNLOAD_STATE["total"] = total
+            req = urllib.request.Request(fetch_url, headers={"User-Agent": "BlurDetector/0.1"})
+            with urllib.request.urlopen(req, timeout=60) as resp, tmp.open("wb") as f:
+                total = int(resp.headers.get("Content-Length") or 0)
+                if total:
+                    DOWNLOAD_STATE["total"] = total
+                buf = 1 << 15
+                while True:
+                    chunk = resp.read(buf)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    DOWNLOAD_STATE["downloaded"] += len(chunk)
+            tmp.replace(dest)
+        except Exception as e:
+            DOWNLOAD_STATE["error"] = str(e)
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+        finally:
+            DOWNLOAD_STATE["running"] = False
+
+    background.add_task(_run)
+    return {"started": True, "model": name, "url": fetch_url, "dest": str(dest)}
 
 
 @app.get("/api/folders")
@@ -306,6 +438,15 @@ def update_verdict(image_id: int, payload: VerdictUpdate) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _count_supported_files(root: Path) -> int:
+    from . import decode
+    n = 0
+    for p in root.rglob("*"):
+        if p.is_file() and decode.is_supported(p):
+            n += 1
+    return n
+
+
 @app.post("/api/ingest")
 def ingest(
     background: BackgroundTasks,
@@ -327,7 +468,8 @@ def ingest(
         db.set_library_models(conn, library_id, models_pending=model_list)
 
     def _run() -> None:
-        INGEST_STATE.update(running=True, folder=str(folder_path), done=0, total=None, error=None)
+        total = _count_supported_files(folder_path)
+        INGEST_STATE.update(running=True, folder=str(folder_path), done=0, total=total, error=None)
         try:
             for _ in pipeline.analyze_folder(folder_path, models=model_list, library_id=library_id):
                 INGEST_STATE["done"] += 1
@@ -355,17 +497,28 @@ def regroup(hamming: int = 10, seconds: int = 3) -> dict[str, Any]:
     bursts = group.group_bursts(
         conn, group.BurstConfig(hamming_threshold=hamming, time_window_seconds=seconds)
     )
+    db.cleanup_orphan_bursts(conn)
     return {"bursts": len(bursts)}
 
 
 @app.get("/api/bursts")
-def list_bursts() -> dict[str, Any]:
+def list_bursts(library_id: int | None = Query(None)) -> dict[str, Any]:
     conn = _conn()
-    rows = conn.execute(
-        "SELECT b.id AS burst_id, COUNT(bm.image_id) AS n "
-        "FROM bursts b JOIN burst_members bm ON bm.burst_id = b.id "
-        "GROUP BY b.id ORDER BY b.id"
-    ).fetchall()
+    if library_id is None:
+        rows = conn.execute(
+            "SELECT b.id AS burst_id, COUNT(bm.image_id) AS n "
+            "FROM bursts b JOIN burst_members bm ON bm.burst_id = b.id "
+            "GROUP BY b.id HAVING n > 0 ORDER BY b.id"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT b.id AS burst_id, COUNT(bm.image_id) AS n "
+            "FROM bursts b JOIN burst_members bm ON bm.burst_id = b.id "
+            "JOIN images i ON i.id = bm.image_id "
+            "WHERE i.library_id = ? "
+            "GROUP BY b.id HAVING n > 0 ORDER BY b.id",
+            (library_id,),
+        ).fetchall()
     return {"items": [{"burst_id": int(r["burst_id"]), "count": int(r["n"])} for r in rows]}
 
 

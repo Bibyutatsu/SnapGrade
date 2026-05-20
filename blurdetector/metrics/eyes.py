@@ -96,7 +96,9 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
 
     if faces is None:
         faces = subject.detect_faces(rgb)
-    faces = [f for f in faces if f.kind == "face"]
+    # Only run blink detection on primary subjects — small background/crowd
+    # faces routinely false-positive on closed-eyes from MediaPipe at low res.
+    faces = subject.primary_subjects(faces or [], rgb.shape)
     if not faces:
         return EyeReport(faces=0, ears=(), blinks=(), min_ear=None, max_blink=None, any_closed=False)
 
