@@ -42,22 +42,34 @@ uv run blurdetector --help
 
 ## Model Weights
 
-BlurDetector uses several small models for different analysis tasks. The table below shows what each one does, its size, and how to obtain it.
+BlurDetector uses several small models for different analysis tasks. **`uv sync` installs the Python packages, not the model weights** — weights are fetched separately (once) from the community model host [`Bibyutatsu/macos-computer-vision-models`](https://github.com/Bibyutatsu/macos-computer-vision-models).
 
-| Model | Feature | Size | How obtained |
+### Fastest path — one command
+
+```bash
+uv run blurdetector setup
+```
+
+This downloads every optional model (U²-Netp, YOLOv8n CoreML, NIMA, Places365 + labels, screendoc) into `~/.blurdetector/models/`. YuNet + MediaPipe FaceLandmarker are *not* included — they auto-download on first `analyze`. Use `--only u2netp,yolov8n` for a subset, `--force` to re-download.
+
+You can also download each model on demand from the **Library tab** in the web UI (a "Download" button appears next to any model whose weights are missing).
+
+| Model | Feature | Size | Obtained by |
 |---|---|---|---|
-| YuNet (ONNX) | Face detection | ~400 KB | **Auto-downloaded** on first run |
-| MediaPipe FaceLandmarker | Blink / closed-eye (EAR) | ~2 MB | **Auto-downloaded** on first run |
-| InsightFace `buffalo_s` | Face clustering | ~17 MB | **Auto-downloaded** by InsightFace on first `faces` run |
-| U²-Netp (ONNX) | Salient subject segmentation — picks the foreground subject in crowd shots and recovers hair-/scarf-occluded subjects when YuNet fails | ~4.5 MB | Auto-download from the Library tab, or `curl` — see below |
-| YOLOv8n (ONNX) | Object detection (also feeds the subject picker via `person` bboxes) | ~12 MB | Export from `.pt` via `ultralytics` — see below |
-| NIMA (CoreML) | Aesthetic scoring | ~14 MB | Manual conversion — see below |
-| Places365 MobileNetV2 (CoreML) | Scene classifier (adds `scene` organizer token) | ~10 MB | _Not currently auto-fetched. Convert from PyTorch if you want it_ |
-| MobileNetV3 screenshot/document head (CoreML) | Auto-rejects screenshots/receipts | ~5 MB | _No public model. A built-in heuristic fallback (palette + saturation) is used when no weights are present._ |
+| YuNet (ONNX) | Face detection | ~400 KB | **Auto** on first analyze |
+| MediaPipe FaceLandmarker | Blink / closed-eye (EAR) | ~2 MB | **Auto** on first analyze |
+| InsightFace `buffalo_s` | Face clustering | ~17 MB | **Auto** by InsightFace on first `faces` run |
+| U²-Netp (ONNX) | Salient subject segmentation — picks the foreground subject in crowds, recovers hair/scarf-occluded subjects | ~4.5 MB | `setup` / UI button |
+| YOLOv8n (CoreML, baked-in NMS) | Object detection; feeds the subject picker via `person` bboxes | ~6 MB | `setup` / UI button |
+| NIMA (CoreML) | Aesthetic scoring | ~14 MB | `setup` / UI button |
+| Places365 (CoreML) | Scene classifier (adds `scene` organizer token) | ~20 MB | `setup` / UI button (pulls labels too) |
+| screendoc (CoreML) | Screenshot / document detection | ~3 MB | `setup` / UI button. Falls back to a palette/saturation heuristic when absent. |
 
-Auto-downloaded models are cached to `~/.blurdetector/models/`. Override with `BLURDETECTOR_MODELS_DIR`.
+Weights are cached to `~/.blurdetector/models/`. Override the cache dir with `BLURDETECTOR_MODELS_DIR`, or point at a fork/mirror of the model host with `BLURDETECTOR_MODELS_REPO`.
 
-The optional models above are **opt-in per library**: on the Library tab's ingest dialog you'll see a checkbox for each model whose weights are present on disk. The weights you've installed are recorded against the library, so re-running ingest or the per-library Sync only runs what was selected.
+The optional models are **opt-in per library**: the Library tab's ingest dialog shows a checkbox for each model whose weights are present. Your selection is recorded against the library, so re-ingest and per-library Sync only run what was selected.
+
+> **Note on screendoc:** the currently hosted model is trained on synthetic "photo" samples and over-fires on real DSLR shots, so its output is stored as a metric but **does not affect verdicts** (gated at conf ≥ 0.90 and never used to reject). Retrain the `photo` class on real photos in the model-host repo to make it verdict-grade.
 
 ---
 

@@ -43,6 +43,18 @@ def is_available() -> bool:
     return _model_path() is not None and _labels_path() is not None
 
 
+def _clean_label(line: str) -> str:
+    """Turn a raw Places365 category line into a human label.
+
+    Places365 ships categories as `/v/village 348` (and two-level entries like
+    `/a/apartment_building/outdoor 8`). Strip the leading `/x/` bucket prefix
+    and the trailing class index, and turn underscores into spaces.
+    """
+    token = line.strip().split()[0]          # "/a/apartment_building/outdoor"
+    name = token.lstrip("/").split("/", 1)[-1]  # "apartment_building/outdoor"
+    return name.replace("/", " ").replace("_", " ").strip()
+
+
 def _load() -> tuple[Any, list[str]] | None:
     global _MODEL, _LABELS, _LOADED
     if _LOADED:
@@ -54,7 +66,7 @@ def _load() -> tuple[Any, list[str]] | None:
     try:
         import coremltools as ct
         _MODEL = ct.models.MLModel(str(mp))
-        _LABELS = [ln.strip() for ln in lp.read_text().splitlines() if ln.strip()]
+        _LABELS = [_clean_label(ln) for ln in lp.read_text().splitlines() if ln.strip()]
     except Exception:
         _MODEL, _LABELS = None, None
         return None

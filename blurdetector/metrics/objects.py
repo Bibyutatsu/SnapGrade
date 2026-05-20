@@ -69,83 +69,141 @@ def _model_path() -> Path | None:
     p = os.environ.get("BLURDETECTOR_YOLO_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".blurdetector" / "models" / "yolov8n.onnx"
-    return default if default.exists() else None
+    # Prefer CoreML first
+    default_cml = Path.home() / ".blurdetector" / "models" / "yolov8n.mlpackage"
+    if default_cml.exists():
+        return default_cml
+    # Fallback to ONNX
+    default_onnx = Path.home() / ".blurdetector" / "models" / "yolov8n.onnx"
+    return default_onnx if default_onnx.exists() else None
 
 
 def is_available() -> bool:
     return _model_path() is not None
 
 
+_MODEL = None
+_LOADED = False
+_IS_COREML = False
+_LABELS: list[str] | None = None
+
+
 def _load() -> Any | None:
-    global _SESSION, _LOADED, _LABELS
+    global _MODEL, _LOADED, _IS_COREML, _LABELS
     if _LOADED:
-        return _SESSION
+        return _MODEL
     _LOADED = True
     mp = _model_path()
     if not mp:
         return None
     try:
-        import onnxruntime as ort
-        _SESSION = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
-        labels_file = mp.with_name("yolov8n_labels.txt")
+        is_cml = mp.suffix == ".mlpackage" or mp.is_dir()
+        if is_cml:
+            import coremltools as ct
+            _MODEL = ct.models.MLModel(str(mp))
+            _IS_COREML = True
+        else:
+            import onnxruntime as ort
+            _MODEL = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
+            _IS_COREML = False
+
+        labels_file = mp.parent / "yolov8n_labels.txt"
         if labels_file.exists():
             _LABELS = [ln.strip() for ln in labels_file.read_text().splitlines() if ln.strip()]
         else:
             _LABELS = list(_COCO80)
     except Exception:
-        _SESSION = None
-    return _SESSION
+        _MODEL = None
+    return _MODEL
 
 
 def analyze(rgb: np.ndarray) -> dict[str, Any]:
-    sess = _load()
-    if sess is None:
+    model = _load()
+    if model is None:
         return {}
     try:
         h0, w0 = rgb.shape[:2]
         scale = _IN_SIZE / max(h0, w0)
         nw, nh = int(w0 * scale), int(h0 * scale)
         im = Image.fromarray(rgb).resize((nw, nh), Image.BILINEAR)
-        canvas = np.zeros((_IN_SIZE, _IN_SIZE, 3), dtype=np.float32)
-        canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
-        x = canvas.transpose(2, 0, 1)[None, ...].astype(np.float32)
-        out = sess.run(None, {sess.get_inputs()[0].name: x})[0]
-        # YOLOv8 raw output: [1, 84, 8400]  — 4 box + 80 class scores
-        pred = np.asarray(out)[0]
-        if pred.shape[0] < pred.shape[1]:
-            pred = pred.T  # to [N, 84]
-        if pred.shape[1] < 5:
-            return {}
-        boxes = pred[:, :4]
-        scores = pred[:, 4:]
-        cls_ids = scores.argmax(axis=1)
-        cls_conf = scores.max(axis=1)
-        keep = cls_conf >= _CONF_TH
-        boxes, cls_ids, cls_conf = boxes[keep], cls_ids[keep], cls_conf[keep]
         labels = _LABELS or _COCO80
-        if boxes.shape[0] == 0:
-            return {"detections": [], "primary": None}
-        # Convert cxcywh → xyxy in input-image coords first.
-        cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-        xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
-        # Per-class NMS so two different classes overlapping each other survive.
-        keep_idx: list[int] = []
-        for c in np.unique(cls_ids):
-            mask = cls_ids == c
-            sub_idx = np.where(mask)[0]
-            kept = _nms(xyxy[sub_idx], cls_conf[sub_idx])
-            keep_idx.extend(sub_idx[k] for k in kept)
-        keep_idx.sort(key=lambda i: -cls_conf[i])
-        dets = []
-        for i in keep_idx[:20]:
-            x0, y0, x1, y1 = xyxy[i].tolist()
-            dets.append({
-                "class": labels[int(cls_ids[i])] if int(cls_ids[i]) < len(labels) else str(int(cls_ids[i])),
-                "conf": float(cls_conf[i]),
-                "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
+
+        if _IS_COREML:
+            # The CoreML export bakes NMS into the graph (Ultralytics
+            # `export(format="coreml", nms=True)`), so we pass the iou/conf
+            # thresholds as model inputs and skip Python-side NMS entirely —
+            # `coordinates`/`confidence` are already the final, deduped boxes.
+            canvas = np.zeros((_IN_SIZE, _IN_SIZE, 3), dtype=np.float32)
+            canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
+            canvas_uint8 = (canvas * 255).astype(np.uint8)
+            pil_canvas = Image.fromarray(canvas_uint8)
+
+            out = model.predict({
+                "image": pil_canvas,
+                "iouThreshold": _IOU_TH,
+                "confidenceThreshold": _CONF_TH
             })
-        primary = dets[0]["class"] if dets else None
-        return {"detections": dets[:10], "primary": primary}
+            conf = np.asarray(out["confidence"])
+            coords = np.asarray(out["coordinates"])
+
+            dets = []
+            for i in range(len(coords)):
+                cx, cy, bw, bh = coords[i]
+                cx, cy, bw, bh = cx * _IN_SIZE, cy * _IN_SIZE, bw * _IN_SIZE, bh * _IN_SIZE
+                x0, y0, x1, y1 = cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
+
+                c_scores = conf[i]
+                class_id = c_scores.argmax()
+                score = c_scores[class_id]
+
+                dets.append({
+                    "class": labels[int(class_id)] if int(class_id) < len(labels) else str(int(class_id)),
+                    "conf": float(score),
+                    "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
+                })
+            dets.sort(key=lambda d: -d["conf"])
+            primary = dets[0]["class"] if dets else None
+            return {"detections": dets[:10], "primary": primary}
+
+        else:
+            canvas = np.zeros((_IN_SIZE, _IN_SIZE, 3), dtype=np.float32)
+            canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
+            x = canvas.transpose(2, 0, 1)[None, ...].astype(np.float32)
+            out = model.run(None, {model.get_inputs()[0].name: x})[0]
+            # YOLOv8 raw output: [1, 84, 8400]  — 4 box + 80 class scores
+            pred = np.asarray(out)[0]
+            if pred.shape[0] < pred.shape[1]:
+                pred = pred.T  # to [N, 84]
+            if pred.shape[1] < 5:
+                return {}
+            boxes = pred[:, :4]
+            scores = pred[:, 4:]
+            cls_ids = scores.argmax(axis=1)
+            cls_conf = scores.max(axis=1)
+            keep = cls_conf >= _CONF_TH
+            boxes, cls_ids, cls_conf = boxes[keep], cls_ids[keep], cls_conf[keep]
+            if boxes.shape[0] == 0:
+                return {"detections": [], "primary": None}
+            # Convert cxcywh → xyxy in input-image coords first.
+            cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+            xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
+            # Per-class NMS so two different classes overlapping each other survive.
+            keep_idx: list[int] = []
+            for c in np.unique(cls_ids):
+                mask = cls_ids == c
+                sub_idx = np.where(mask)[0]
+                kept = _nms(xyxy[sub_idx], cls_conf[sub_idx])
+                keep_idx.extend(sub_idx[k] for k in kept)
+            keep_idx.sort(key=lambda i: -cls_conf[i])
+            dets = []
+            for i in keep_idx[:20]:
+                x0, y0, x1, y1 = xyxy[i].tolist()
+                dets.append({
+                    "class": labels[int(cls_ids[i])] if int(cls_ids[i]) < len(labels) else str(int(cls_ids[i])),
+                    "conf": float(cls_conf[i]),
+                    "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
+                })
+            primary = dets[0]["class"] if dets else None
+            return {"detections": dets[:10], "primary": primary}
     except Exception:
         return {}

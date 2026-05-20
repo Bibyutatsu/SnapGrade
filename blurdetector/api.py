@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, decide, group, organize, pipeline, thumb, xmp
+from . import db, decide, group, models as db_models, organize, pipeline, thumb, xmp
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 INGEST_STATE: dict[str, Any] = {"running": False, "folder": None, "done": 0, "total": None, "error": None}
@@ -223,25 +223,15 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
 
 _AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
 
-# Best-effort public URLs for small model weights. None means "no known public
-# source"; the user can supply one via the `url` query param to /download.
+# Public URLs for small model weights, built from the community model host
+# (blurdetector.models.MODELS_REPO_RAW). The user can override per-request via
+# the `url` query param to /download.
+_REPO = db_models.MODELS_REPO_RAW
 MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
-    "subject_seg": {
-        "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
-        "filename": "u2netp.onnx",
-    },
-    "objects": {
-        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx",
-        "filename": "yolov8n.onnx",
-    },
-    "scene": {
-        "url": "",  # Places365 CoreML / ONNX not reliably hosted; user must supply.
-        "filename": "places365.mlpackage",
-    },
-    "screendoc": {
-        "url": "",  # No reliable public model; heuristic fallback ships in-tree.
-        "filename": "screendoc.mlpackage",
-    },
+    "subject_seg": {"url": f"{_REPO}/u2netp.onnx", "filename": "u2netp.onnx"},
+    "objects": {"url": f"{_REPO}/yolov8n.mlpackage.zip", "filename": "yolov8n.mlpackage"},
+    "scene": {"url": f"{_REPO}/places365.mlpackage.zip", "filename": "places365.mlpackage"},
+    "screendoc": {"url": f"{_REPO}/screendoc.mlpackage.zip", "filename": "screendoc.mlpackage"},
 }
 
 DOWNLOAD_STATE: dict[str, Any] = {"running": False, "model": None, "downloaded": 0, "total": None, "error": None}
@@ -293,15 +283,21 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
 
     def _run() -> None:
         import urllib.request
-        DOWNLOAD_STATE.update(running=True, model=name, downloaded=0, total=None, error=None)
-        tmp = dest.with_suffix(dest.suffix + ".part")
+        import zipfile
+        # macOS Python installs frequently lack a usable system CA bundle, so
+        # default urllib HTTPS fails with CERTIFICATE_VERIFY_FAILED. Use
+        # certifi's bundle when available (mirrors what `curl` does).
+        ctx = None
         try:
-            def hook(blocks: int, block_size: int, total: int) -> None:
-                DOWNLOAD_STATE["downloaded"] = blocks * block_size
-                if total > 0:
-                    DOWNLOAD_STATE["total"] = total
-            req = urllib.request.Request(fetch_url, headers={"User-Agent": "BlurDetector/0.1"})
-            with urllib.request.urlopen(req, timeout=60) as resp, tmp.open("wb") as f:
+            import ssl
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = None
+
+        def _fetch(url: str, fh) -> None:
+            req = urllib.request.Request(url, headers={"User-Agent": "BlurDetector/0.1"})
+            with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
                 total = int(resp.headers.get("Content-Length") or 0)
                 if total:
                     DOWNLOAD_STATE["total"] = total
@@ -310,15 +306,45 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
                     chunk = resp.read(buf)
                     if not chunk:
                         break
-                    f.write(chunk)
+                    fh.write(chunk)
                     DOWNLOAD_STATE["downloaded"] += len(chunk)
-            tmp.replace(dest)
+
+        DOWNLOAD_STATE.update(running=True, model=name, downloaded=0, total=None, error=None)
+        is_zip = fetch_url.endswith(".zip")
+        if is_zip:
+            zip_dest = dest.with_suffix(dest.suffix + ".zip")
+            tmp = zip_dest.with_suffix(".part")
+        else:
+            tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with tmp.open("wb") as f:
+                _fetch(fetch_url, f)
+            if is_zip:
+                tmp.replace(zip_dest)
+                with zipfile.ZipFile(zip_dest, "r") as zip_ref:
+                    zip_ref.extractall(dest.parent)
+                zip_dest.unlink()
+            else:
+                tmp.replace(dest)
+
+            # Special case for scene: download places365_labels.txt too!
+            if name == "scene":
+                labels_dest = dest.parent / "places365_labels.txt"
+                labels_tmp = labels_dest.with_suffix(".part")
+                with labels_tmp.open("wb") as f:
+                    _fetch(f"{_REPO}/places365_labels.txt", f)
+                labels_tmp.replace(labels_dest)
         except Exception as e:
             DOWNLOAD_STATE["error"] = str(e)
             try:
                 tmp.unlink(missing_ok=True)
             except Exception:
                 pass
+            if is_zip:
+                try:
+                    zip_dest.unlink(missing_ok=True)
+                except Exception:
+                    pass
         finally:
             DOWNLOAD_STATE["running"] = False
 
@@ -417,30 +443,64 @@ def get_image(image_id: int) -> dict[str, Any]:
     return out
 
 
+def _resolve_or_heal(conn: sqlite3.Connection, image_id: int) -> tuple[Path, str | None] | None:
+    """Return (path, content_hash) for an image, healing a drifted path.
+
+    If the stored path is gone (e.g. files moved on disk by an external tool),
+    search the owning library's root for a file whose content_hash matches,
+    rebind the DB path, and return it. Bounded by library size; best-effort.
+    """
+    row = conn.execute(
+        "SELECT path, content_hash, library_id FROM images WHERE id = ?", (image_id,)
+    ).fetchone()
+    if not row:
+        return None
+    path = Path(row["path"])
+    if path.exists():
+        return path, row["content_hash"]
+    chash = row["content_hash"]
+    lib = conn.execute(
+        "SELECT root_path FROM libraries WHERE id = ?", (row["library_id"],)
+    ).fetchone() if row["library_id"] is not None else None
+    if not lib or not chash:
+        return None
+    root = Path(lib["root_path"])
+    if not root.is_dir():
+        return None
+    try:
+        for cand in pipeline.walk_images(root):
+            try:
+                if pipeline._content_hash(cand) == chash:
+                    conn.execute("UPDATE images SET path=? WHERE id=?", (str(cand), image_id))
+                    return cand, chash
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
 @app.get("/api/images/{image_id}/thumb")
 def get_thumb(image_id: int, size: int = Query(512, ge=64, le=2048)) -> Response:
     conn = _conn()
-    row = conn.execute(
-        "SELECT path, content_hash FROM images WHERE id = ?", (image_id,)
-    ).fetchone()
-    if not row:
-        raise HTTPException(404)
-    path = Path(row["path"])
-    if not path.exists():
-        raise HTTPException(410, "source file missing")
-    out = thumb.get_or_build(path, row["content_hash"], long_edge=size)
+    resolved = _resolve_or_heal(conn, image_id)
+    if resolved is None:
+        # Distinguish "no such image" from "file genuinely gone".
+        exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
+        raise HTTPException(410 if exists else 404, "source file missing")
+    path, content_hash = resolved
+    out = thumb.get_or_build(path, content_hash, long_edge=size)
     return FileResponse(out, media_type="image/jpeg")
 
 
 @app.get("/api/images/{image_id}/preview")
 def get_preview(image_id: int) -> Response:
     conn = _conn()
-    row = conn.execute("SELECT path FROM images WHERE id = ?", (image_id,)).fetchone()
-    if not row:
-        raise HTTPException(404)
-    path = Path(row["path"])
-    if not path.exists():
-        raise HTTPException(410)
+    resolved = _resolve_or_heal(conn, image_id)
+    if resolved is None:
+        exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
+        raise HTTPException(410 if exists else 404, "source file missing")
+    path, _ = resolved
     data = thumb.render_to_bytes(path, long_edge=1600)
     return Response(content=data, media_type="image/jpeg")
 

@@ -24,6 +24,21 @@ _MODEL = None
 _LOADED = False
 _CLASSES = ("screenshot", "document", "photo")
 
+# Only treat a non-photo classification as actionable above this confidence.
+# The shipped model's "photo" class is trained on synthetic color-fields, not
+# real DSLR frames, so it over-fires on real photos — keep this high and do
+# NOT wire screendoc into decide.py until the model is retrained on real data.
+SCREENDOC_MIN_CONF = 0.90
+
+
+def is_confident(result: dict[str, Any]) -> bool:
+    """True only for a high-confidence screenshot/document call (never 'photo')."""
+    return (
+        isinstance(result, dict)
+        and result.get("class") in ("screenshot", "document")
+        and float(result.get("conf", 0.0)) >= SCREENDOC_MIN_CONF
+    )
+
 
 def _model_path() -> Path | None:
     p = os.environ.get("BLURDETECTOR_SCREENDOC_MODEL")
@@ -76,9 +91,16 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
         x = np.asarray(im, dtype=np.float32) / 255.0
         x = x.transpose(2, 0, 1).astype(np.float32)  # HWC → CHW; CoreML model is NCHW
         out = model.predict({list(model.input_description)[0]: x[None, ...]})
-        probs = np.asarray(next(iter(out.values()))).ravel()
-        if probs.size != len(_CLASSES):
+        raw = np.asarray(next(iter(out.values()))).ravel()
+        if raw.size != len(_CLASSES):
             return _heuristic(rgb)
+        # The model head is a bare nn.Linear (raw logits). Softmax so `conf`
+        # and `probs` are genuine probabilities; argmax is unaffected.
+        if raw.min() < 0 or raw.max() > 1.5 or not np.isclose(raw.sum(), 1.0, atol=1e-3):
+            probs = np.exp(raw - raw.max())
+            probs = probs / probs.sum()
+        else:
+            probs = raw
         i = int(probs.argmax())
         return {"class": _CLASSES[i], "conf": float(probs[i]), "source": "model",
                 "probs": {c: float(p) for c, p in zip(_CLASSES, probs)}}

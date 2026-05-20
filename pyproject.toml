@@ -27,6 +27,7 @@ dependencies = [
     "torchvision>=0.27.0",
     "coremltools>=9.0",
     "h5py>=3.16.0",
+    "certifi>=2024.2.2",
 ]
 
 [project.optional-dependencies]

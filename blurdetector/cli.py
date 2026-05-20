@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from . import db, events, group, organize, pipeline, report, xmp
+from . import db, events, group, models, organize, pipeline, report, xmp
 
 app = typer.Typer(help="BlurDetector — local photo triage and organizer.")
 console = Console()
@@ -194,6 +194,49 @@ def report_cmd(
     v = None if verdict == "all" else verdict
     n = report.render(conn, out, verdict=v)
     console.print(f"Wrote [bold]{n}[/] cards → {out}")
+
+
+@app.command("setup")
+def setup_cmd(
+    only: str = typer.Option(
+        "", "--only", help="Comma-separated subset of optional models (default: all)"
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-download even if present"),
+) -> None:
+    """Download the optional model weights from the community model host.
+
+    YuNet + FaceLandmarker are fetched automatically on first analyze, so this
+    only pulls the opt-in models (U²-Netp, YOLOv8n, NIMA, Places365, screendoc).
+    Run once on a fresh machine; weights land in ~/.blurdetector/models/.
+    """
+    wanted = [m.strip() for m in only.split(",") if m.strip()] or list(models.OPTIONAL_MODELS)
+    unknown = [m for m in wanted if m not in models.OPTIONAL_MODELS and m != "places365_labels"]
+    if unknown:
+        console.print(f"[red]Unknown model(s):[/] {', '.join(unknown)}")
+        console.print(f"Choose from: {', '.join(models.OPTIONAL_MODELS)}")
+        raise typer.Exit(1)
+
+    console.print(f"Model cache: [dim]{models.MODELS_DIR}[/]")
+    ok, skipped, failed = 0, 0, 0
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), TimeElapsedColumn(), console=console) as prog:
+        for name in wanted:
+            if not force and models.is_present(name):
+                console.print(f"  [green]✓[/] {name} [dim](already present)[/]")
+                skipped += 1
+                continue
+            task = prog.add_task(f"downloading {name}…", total=None)
+            try:
+                path = models.ensure(name)
+                prog.remove_task(task)
+                console.print(f"  [green]✓[/] {name} → [dim]{path}[/]")
+                ok += 1
+            except Exception as e:
+                prog.remove_task(task)
+                console.print(f"  [red]✗[/] {name}: {e}")
+                failed += 1
+    console.print(f"\nDone: [green]{ok} downloaded[/], {skipped} present, [red]{failed} failed[/].")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command("serve")

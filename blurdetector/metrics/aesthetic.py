@@ -30,9 +30,13 @@ def _load() -> object | None:
     _LOADED = True
     path = os.environ.get("BLURDETECTOR_NIMA_MODEL")
     if not path:
-        default = Path.home() / ".blurdetector" / "models" / "nima.mlpackage"
-        if default.exists():
-            path = str(default)
+        try:
+            from .. import models
+            path = str(models.ensure("nima"))
+        except Exception:
+            default = Path.home() / ".blurdetector" / "models" / "nima.mlpackage"
+            if default.exists():
+                path = str(default)
     if not path or not Path(path).exists():
         return None
     try:

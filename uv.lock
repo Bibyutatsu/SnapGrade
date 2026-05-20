@@ -102,6 +102,7 @@ name = "blurdetector"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "coremltools" },
     { name = "h5py" },
     { name = "imagehash" },
@@ -134,6 +135,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2024.2.2" },
     { name = "coremltools", specifier = ">=9.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110" },
     { name = "h5py", specifier = ">=3.16.0" },
