@@ -25,7 +25,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone and install
 
 ```bash
-git clone https://github.com/your-org/SnapGrade.git
+git clone https://github.com/Bibyutatsu/SnapGrade.git
 cd SnapGrade
 uv sync --all-extras
 ```
