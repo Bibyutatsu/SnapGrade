@@ -993,8 +993,14 @@ function SettingsTab() {
   `;
 }
 
+const VALID_TABS = new Set(TABS.map(([k]) => k));
+
 function App() {
-  const [tab, setTab] = useState("library");
+  const [tab, setTab] = useState(() => {
+    const saved = localStorage.getItem("bd_tab");
+    return VALID_TABS.has(saved) ? saved : "library";
+  });
+  const setTabPersist = useCallback((t) => { setTab(t); localStorage.setItem("bd_tab", t); }, []);
   const [stats, refreshStats] = useStats(2000);
   let pane;
   if (tab === "library")       pane = html`<${LibraryTab} stats=${stats} refreshStats=${refreshStats} />`;
@@ -1003,7 +1009,7 @@ function App() {
   else                         pane = html`<${SettingsTab} />`;
   return html`
     <div class="shell">
-      <${Sidebar} tab=${tab} setTab=${setTab} stats=${stats} />
+      <${Sidebar} tab=${tab} setTab=${setTabPersist} stats=${stats} />
       <main>
         <${TopBar} tab=${tab} frameNo=${stats?.images} />
         ${pane}
