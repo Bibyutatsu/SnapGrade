@@ -69,6 +69,7 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
     try:
         im = Image.fromarray(rgb).resize((224, 224), Image.BILINEAR)
         x = (np.asarray(im, dtype=np.float32) / 255.0 - _MEAN) / _STD
+        x = x.transpose(2, 0, 1).astype(np.float32)  # HWC → CHW; CoreML model is NCHW
         out = model.predict({list(model.input_description)[0]: x[None, ...]})
         probs = np.asarray(next(iter(out.values()))).ravel()
         if probs.size != len(labels):

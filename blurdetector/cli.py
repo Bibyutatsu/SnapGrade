@@ -41,8 +41,10 @@ def analyze(
     force: bool = typer.Option(False, "--force", help="Re-analyze even if cached"),
     max_edge: int = typer.Option(2000, "--max-edge", help="Long-edge size for analysis"),
     workers: int = typer.Option(0, "--workers", help="Thread count (0 = auto)"),
+    models: str = typer.Option("", "--models", help="Comma-separated optional models: scene,screendoc,objects,subject_seg"),
 ) -> None:
     """Recursively analyze a folder of images."""
+    model_list = [m.strip() for m in models.split(",") if m.strip()] or None
     rows: list[dict] = []
     with Progress(
         SpinnerColumn(),
@@ -52,7 +54,7 @@ def analyze(
     ) as progress:
         task = progress.add_task("analyzing…", total=None)
         w = workers if workers > 0 else None
-        for result in pipeline.analyze_folder(folder, db_path=db_path, force=force, max_edge=max_edge, workers=w):
+        for result in pipeline.analyze_folder(folder, db_path=db_path, force=force, max_edge=max_edge, workers=w, models=model_list):
             progress.update(task, description=f"analyzed {result.path.name}")
             rows.append(
                 {
