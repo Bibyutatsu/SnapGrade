@@ -350,23 +350,36 @@ function Histogram({ values, threshold, onChange, label, accent = 'var(--c-keepe
 // Bins frames into a 60-cell histogram of capture_time; the two handles drive
 // date_from / date_to. Drag to the very edge to clear that bound.
 function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
-  const ref = useRef(null);
-  const dragRef = useRef(null);  // 'from' | 'to' | null
+  // Refactored from scratch (Dec 2026) — uses Pointer Events with
+  // setPointerCapture so the drag never escapes the handle, no global window
+  // listeners and no stale closures. The bar's clientRect is read fresh on
+  // every pointermove. Handles can't cross each other (clamped via fresh
+  // refs of the current from/to percentages).
+
+  const trackRef    = useRef(null);
+  const fromPctRef  = useRef(0);
+  const toPctRef    = useRef(1);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
+  const BINS = 60;
+
+  // Sorted capture-time millis. Anything missing capture_time is dropped.
   const dated = useMemo(() => {
-    return images
-      .map(i => i.capture_time ? new Date(i.capture_time).getTime() : NaN)
-      .filter(t => !isNaN(t))
-      .sort((a, b) => a - b);
+    const out = [];
+    for (const i of images) {
+      if (!i.capture_time) continue;
+      const t = Date.parse(i.capture_time);
+      if (!isNaN(t)) out.push(t);
+    }
+    out.sort((a, b) => a - b);
+    return out;
   }, [images]);
 
   const minT = dated[0];
   const maxT = dated[dated.length - 1];
   const span = (maxT || 0) - (minT || 0);
 
-  const BINS = 60;
   const counts = useMemo(() => {
     const c = new Array(BINS).fill(0);
     if (!span) return c;
@@ -378,71 +391,75 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
   }, [dated, minT, span]);
   const maxCount = Math.max(1, ...counts);
 
-  const fromT = dateFrom ? new Date(dateFrom).getTime() : (minT || 0);
-  const toT   = dateTo   ? new Date(dateTo + 'T23:59:59').getTime() : (maxT || 0);
-  const fromPct = span ? Math.max(0, Math.min(1, (fromT - minT) / span)) : 0;
-  const toPct   = span ? Math.max(0, Math.min(1, (toT   - minT) / span)) : 1;
-
-  // Keep latest bounds in refs so the long-lived drag listeners don't capture
-  // stale fromPct/toPct from an earlier render. Without this, the clamp below
-  // would always use the handle positions from the first drag start.
-  const fromPctRef = useRef(0);
-  const toPctRef   = useRef(1);
-
-  useEffect(() => {
-    function up() { dragRef.current = null; }
-    function move(e) {
-      if (!dragRef.current || !ref.current || !span) return;
-      const rect = ref.current.getBoundingClientRect();
-      let pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      // Clamp so handles can't cross each other (leave a 1% gap so they stay
-      // grabbable). This is the fix for "timeline gets extended" — without it,
-      // dragging the from handle past the to handle inverted the selection.
-      const GAP = 0.01;
-      if (dragRef.current === 'from') pct = Math.min(pct, Math.max(0, toPctRef.current - GAP));
-      else                            pct = Math.max(pct, Math.min(1, fromPctRef.current + GAP));
-      const ts = minT + pct * span;
-      const iso = new Date(ts).toISOString().slice(0, 10);
-      if (dragRef.current === 'from') {
-        onChangeRef.current({ from: pct < 0.005 ? '' : iso });
-      } else {
-        onChangeRef.current({ to:   pct > 0.995 ? '' : iso });
-      }
-    }
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
-    return () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
-    };
-  }, [minT, span]);
-
+  // Below the early-return guard so it's safe to dereference minT/span.
   if (dated.length < 2 || !span) return null;
 
-  // Refresh refs after the early-return guard — at this point fromPct/toPct
-  // are well-defined numbers in [0,1].
+  // Map between "YYYY-MM-DD" filter strings and absolute millis. Both sides go
+  // through Date.parse so the comparison in applyFilters matches exactly.
+  const fromT = dateFrom ? Date.parse(dateFrom) : minT;
+  const toT   = dateTo   ? Date.parse(dateTo + 'T23:59:59') : maxT;
+  const fromPct = Math.max(0, Math.min(1, (fromT - minT) / span));
+  const toPct   = Math.max(0, Math.min(1, (toT   - minT) / span));
   fromPctRef.current = fromPct;
   toPctRef.current   = toPct;
 
-  function onBgMouseDown(e) {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    // If the click is inside the selected band, do nothing — let the user
-    // grab a handle explicitly. This avoids "click in the middle, the closer
-    // handle jumps onto your cursor" surprise.
-    if (pct > fromPct + 0.01 && pct < toPct - 0.01) return;
-    const handle = Math.abs(pct - fromPct) <= Math.abs(pct - toPct) ? 'from' : 'to';
-    dragRef.current = handle;
+  function pctFromEvent(e) {
+    const rect = trackRef.current.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  }
+  function emit(which, pct) {
     const ts = minT + pct * span;
     const iso = new Date(ts).toISOString().slice(0, 10);
-    if (handle === 'from') onChange({ from: pct < 0.005 ? '' : iso });
-    else                    onChange({ to:   pct > 0.995 ? '' : iso });
+    if (which === 'from') onChangeRef.current({ from: pct < 0.005 ? '' : iso });
+    else                  onChangeRef.current({ to:   pct > 0.995 ? '' : iso });
+  }
+  // Handler factory — returns the three pointer handlers for one handle.
+  function handleProps(which) {
+    return {
+      onPointerDown: e => {
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        e.currentTarget.dataset.drag = '1';
+      },
+      onPointerMove: e => {
+        if (e.currentTarget.dataset.drag !== '1') return;
+        const GAP = 0.01;
+        let pct = pctFromEvent(e);
+        if (which === 'from') pct = Math.min(pct, Math.max(0, toPctRef.current - GAP));
+        else                  pct = Math.max(pct, Math.min(1, fromPctRef.current + GAP));
+        emit(which, pct);
+      },
+      onPointerUp: e => {
+        delete e.currentTarget.dataset.drag;
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+      },
+      onPointerCancel: e => { delete e.currentTarget.dataset.drag; },
+    };
+  }
+
+  // Background click — only acts on clicks outside the selected band (in the
+  // band itself, we route through the handles so the closer-handle picker
+  // doesn't surprise the user).
+  function onTrackPointerDown(e) {
+    const pct = pctFromEvent(e);
+    if (pct > fromPct + 0.02 && pct < toPct - 0.02) return;
+    const which = Math.abs(pct - fromPct) <= Math.abs(pct - toPct) ? 'from' : 'to';
+    emit(which, pct);
   }
 
   const fmt = ts => new Date(ts).toLocaleDateString('en-GB',
     { day: '2-digit', month: 'short', year: '2-digit' });
   const filterActive = !!(dateFrom || dateTo);
+
+  const handleBaseStyle = {
+    position: 'absolute', top: -5, bottom: -5,
+    width: 14, marginLeft: -7,
+    background: 'var(--c-accent)', borderRadius: 3,
+    border: '2px solid var(--c-bg)',
+    cursor: 'ew-resize', zIndex: 3,
+    boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
+    touchAction: 'none',
+  };
 
   return (
     <div style={{ padding:'8px 18px 6px', borderBottom:'1px solid var(--c-border)',
@@ -453,10 +470,10 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
                     fontFamily:'var(--font-ui)', flexShrink:0, width:70 }}>Timeline</div>
 
       <div style={{ flex:1, position:'relative' }}>
-        <div ref={ref} onMouseDown={onBgMouseDown}
+        <div ref={trackRef} onPointerDown={onTrackPointerDown}
           style={{ position:'relative', height:36, cursor:'col-resize', userSelect:'none',
                    background:'var(--c-bg)', border:'1px solid var(--c-border)',
-                   borderRadius:'var(--radius)' }}
+                   borderRadius:'var(--radius)', touchAction:'none' }}
         >
           {counts.map((c, i) => {
             const binCenter = (i + 0.5) / BINS;
@@ -478,22 +495,10 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
           })}
           {/* Selection band */}
           <div style={{ position:'absolute', top:0, bottom:0,
-                        left:`${fromPct * 100}%`, width:`${(toPct - fromPct) * 100}%`,
-                        background:'rgba(193,68,14,0.08)', pointerEvents:'none' }}/>
-          {/* From handle */}
-          <div onMouseDown={e => { e.stopPropagation(); dragRef.current = 'from'; }}
-            style={{ position:'absolute', top:-3, bottom:-3, left:`${fromPct * 100}%`,
-                     width:10, marginLeft:-5, background:'var(--c-accent)',
-                     borderRadius:2, border:'1.5px solid var(--c-bg)',
-                     cursor:'ew-resize', zIndex:2,
-                     boxShadow:'0 1px 3px rgba(0,0,0,0.4)' }}/>
-          {/* To handle */}
-          <div onMouseDown={e => { e.stopPropagation(); dragRef.current = 'to'; }}
-            style={{ position:'absolute', top:-3, bottom:-3, left:`${toPct * 100}%`,
-                     width:10, marginLeft:-5, background:'var(--c-accent)',
-                     borderRadius:2, border:'1.5px solid var(--c-bg)',
-                     cursor:'ew-resize', zIndex:2,
-                     boxShadow:'0 1px 3px rgba(0,0,0,0.4)' }}/>
+                        left:`${fromPct * 100}%`, width:`${Math.max(0, toPct - fromPct) * 100}%`,
+                        background:'rgba(193,68,14,0.10)', pointerEvents:'none' }}/>
+          <div {...handleProps('from')} style={{ ...handleBaseStyle, left:`${fromPct * 100}%` }} />
+          <div {...handleProps('to')}   style={{ ...handleBaseStyle, left:`${toPct * 100}%` }} />
         </div>
         <div style={{ display:'flex', justifyContent:'space-between',
                       fontSize:8, letterSpacing:'0.18em', textTransform:'uppercase',

@@ -433,9 +433,9 @@ function FacesScreen() {
                       onMouseOver={e => { e.currentTarget.style.borderColor='var(--c-text2)'; e.currentTarget.style.transform='translateY(-2px)'; }}
                       onMouseOut={e  => { e.currentTarget.style.borderColor='var(--c-border)';  e.currentTarget.style.transform='none'; }}
                     >
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:1, height:130, background:'var(--c-border)' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gridTemplateRows:'1fr 1fr', gap:1, height:160, background:'var(--c-border)', overflow:'hidden' }}>
                         {c.thumbs.slice(0,4).map(t => (
-                          <img key={t.id} src={t.url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', filter:'saturate(0.85)' }} />
+                          <img key={t.id} src={t.url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', filter:'saturate(0.85)', minWidth:0, minHeight:0 }} />
                         ))}
                       </div>
                       <div style={{ padding:'12px 14px' }}>
