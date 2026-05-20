@@ -1,8 +1,8 @@
 """Scene classifier (Places365 MobileNetV2, CoreML).
 
-Drop a Places365 CoreML model at ~/.blurdetector/models/places365.mlpackage
-(or set BLURDETECTOR_SCENE_MODEL) plus a labels file at
-~/.blurdetector/models/places365_labels.txt (one label per line).
+Drop a Places365 CoreML model at ~/.snapgrade/models/places365.mlpackage
+(or set SNAPGRADE_SCENE_MODEL) plus a labels file at
+~/.snapgrade/models/places365_labels.txt (one label per line).
 
 If either is missing, is_available() returns False and analyze() returns {}.
 """
@@ -24,18 +24,18 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def _model_path() -> Path | None:
-    p = os.environ.get("BLURDETECTOR_SCENE_MODEL")
+    p = os.environ.get("SNAPGRADE_SCENE_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".blurdetector" / "models" / "places365.mlpackage"
+    default = Path.home() / ".snapgrade" / "models" / "places365.mlpackage"
     return default if default.exists() else None
 
 
 def _labels_path() -> Path | None:
-    p = os.environ.get("BLURDETECTOR_SCENE_LABELS")
+    p = os.environ.get("SNAPGRADE_SCENE_LABELS")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".blurdetector" / "models" / "places365_labels.txt"
+    default = Path.home() / ".snapgrade" / "models" / "places365_labels.txt"
     return default if default.exists() else None
 
 

@@ -14,7 +14,7 @@ from PIL import Image
 
 from . import decode
 
-CACHE_ROOT = Path.home() / ".blurdetector" / "thumbs"
+CACHE_ROOT = Path.home() / ".snapgrade" / "thumbs"
 
 
 def _cache_path(content_hash: str, long_edge: int) -> Path:

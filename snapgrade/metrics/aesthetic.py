@@ -4,7 +4,7 @@ The CoreML model is not bundled — the user supplies one. We expect a model
 that takes a 224x224 RGB image (mean/std normalized like ImageNet) and emits
 a 10-bin distribution; score = sum(i * p_i) / 9 → [0,1].
 
-Set BLURDETECTOR_NIMA_MODEL to the .mlmodelc/.mlpackage path. If unset or the
+Set SNAPGRADE_NIMA_MODEL to the .mlmodelc/.mlpackage path. If unset or the
 model fails to load, scoring returns None and the rest of the pipeline carries
 on unchanged.
 """
@@ -28,13 +28,13 @@ def _load() -> object | None:
     if _LOADED:
         return _MODEL
     _LOADED = True
-    path = os.environ.get("BLURDETECTOR_NIMA_MODEL")
+    path = os.environ.get("SNAPGRADE_NIMA_MODEL")
     if not path:
         try:
             from .. import models
             path = str(models.ensure("nima"))
         except Exception:
-            default = Path.home() / ".blurdetector" / "models" / "nima.mlpackage"
+            default = Path.home() / ".snapgrade" / "models" / "nima.mlpackage"
             if default.exists():
                 path = str(default)
     if not path or not Path(path).exists():

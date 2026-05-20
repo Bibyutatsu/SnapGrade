@@ -1,7 +1,7 @@
 """Salient subject segmentation via U²-Netp ONNX (~4.6 MB).
 
-Drop the model at ~/.blurdetector/models/u2netp.onnx
-(or set BLURDETECTOR_U2NETP_MODEL).
+Drop the model at ~/.snapgrade/models/u2netp.onnx
+(or set SNAPGRADE_U2NETP_MODEL).
 
 Returns: foreground mask coverage + bounding box of salient subject + a crude
 'bokeh score' (mean BG blur / FG sharpness, when computable).
@@ -22,10 +22,10 @@ _IN_SIZE = 320
 
 
 def _model_path() -> Path | None:
-    p = os.environ.get("BLURDETECTOR_U2NETP_MODEL")
+    p = os.environ.get("SNAPGRADE_U2NETP_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".blurdetector" / "models" / "u2netp.onnx"
+    default = Path.home() / ".snapgrade" / "models" / "u2netp.onnx"
     return default if default.exists() else None
 
 

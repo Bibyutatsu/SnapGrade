@@ -53,7 +53,7 @@ def render(conn: sqlite3.Connection, out_html: Path, verdict: str | None = "keep
     out_html.parent.mkdir(parents=True, exist_ok=True)
     out_html.write_text(
         f"""<!doctype html><html><head><meta charset="utf-8" />
-<title>BlurDetector report</title>
+<title>SnapGrade report</title>
 <style>
 body{{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:1rem}}
 h1{{margin:0 0 1rem}}
@@ -66,7 +66,7 @@ h1{{margin:0 0 1rem}}
 .reasons{{color:#fa3;font-size:.7rem;margin-top:.2rem}}
 </style></head>
 <body>
-<h1>BlurDetector — {verdict or "all"} ({len(cards)} images)</h1>
+<h1>SnapGrade — {verdict or "all"} ({len(cards)} images)</h1>
 <div class="grid">{"".join(cards)}</div>
 </body></html>""",
         encoding="utf-8",

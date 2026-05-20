@@ -9,12 +9,12 @@ from fastapi import HTTPException
 
 
 def _fresh_db(tmp_path: Path, monkeypatch) -> Path:
-    """Point the default DB at a fresh tmp path so tests don't touch ~/.blurdetector.
+    """Point the default DB at a fresh tmp path so tests don't touch ~/.snapgrade.
 
     The `connect` default is bound at function-definition time, so we both patch
     the module attribute *and* override the default kwarg via a wrapper.
     """
-    from blurdetector import db as db_mod
+    from snapgrade import db as db_mod
 
     db_path = tmp_path / "library.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB", db_path)
@@ -24,7 +24,7 @@ def _fresh_db(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_ensure_library_idempotent(tmp_path, monkeypatch):
-    from blurdetector import db
+    from snapgrade import db
 
     _fresh_db(tmp_path, monkeypatch)
     conn = db.connect()
@@ -37,7 +37,7 @@ def test_ensure_library_idempotent(tmp_path, monkeypatch):
 
 
 def test_delete_library_cascades_images(tmp_path, monkeypatch):
-    from blurdetector import db
+    from snapgrade import db
 
     _fresh_db(tmp_path, monkeypatch)
     conn = db.connect()
@@ -63,7 +63,7 @@ def test_delete_library_cascades_images(tmp_path, monkeypatch):
 def test_ingest_rejects_empty_folder(tmp_path, monkeypatch):
     _fresh_db(tmp_path, monkeypatch)
     from fastapi import BackgroundTasks
-    from blurdetector import api as api_mod
+    from snapgrade import api as api_mod
 
     for bad in ("", "   "):
         with pytest.raises(HTTPException) as exc:
@@ -74,7 +74,7 @@ def test_ingest_rejects_empty_folder(tmp_path, monkeypatch):
 
 def test_stats_includes_libraries_count(tmp_path, monkeypatch):
     _fresh_db(tmp_path, monkeypatch)
-    from blurdetector import api as api_mod, db
+    from snapgrade import api as api_mod, db
 
     conn = db.connect()
     db.ensure_library(conn, "/a")
@@ -86,7 +86,7 @@ def test_stats_includes_libraries_count(tmp_path, monkeypatch):
 
 
 def test_set_library_models_merges_run(tmp_path, monkeypatch):
-    from blurdetector import db
+    from snapgrade import db
 
     _fresh_db(tmp_path, monkeypatch)
     conn = db.connect()

@@ -14,15 +14,15 @@ _TEMPLATE = """<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-    xmlns:blurdetector="https://github.com/local/blurdetector/ns/1.0/">
+    xmlns:snapgrade="https://github.com/local/snapgrade/ns/1.0/">
    <xmp:Rating>{rating}</xmp:Rating>
    <xmp:Label>{label}</xmp:Label>
-   <blurdetector:Verdict>{verdict}</blurdetector:Verdict>
-   <blurdetector:Reasons>
+   <snapgrade:Verdict>{verdict}</snapgrade:Verdict>
+   <snapgrade:Reasons>
     <rdf:Seq>
 {reasons}
     </rdf:Seq>
-   </blurdetector:Reasons>
+   </snapgrade:Reasons>
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>

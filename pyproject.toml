@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "blurdetector"
+name = "snapgrade"
 version = "0.1.0"
 description = "Local photo triage and organizer: blur/focus rejection, blink detection, burst grouping, hierarchical organization."
 readme = "README.md"
@@ -35,10 +35,10 @@ api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]
-blurdetector = "blurdetector.cli:app"
+snapgrade = "snapgrade.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["blurdetector"]
+packages = ["snapgrade"]
 
 [tool.ruff]
 line-length = 100

@@ -180,7 +180,7 @@ function ModelChecklist({ models, selected, setSelected, downloadState, onRefres
   const dlActive = downloadState?.running;
   return html`
     <div class="model-checklist">
-      <div class="label">Optional models · weights live in ~/.blurdetector/models/</div>
+      <div class="label">Optional models · weights live in ~/.snapgrade/models/</div>
       ${models.map((m) => {
         const info = MODEL_INFO[m.name] || { label: m.name, note: "" };
         const isOn = selected.includes(m.name);
@@ -212,7 +212,7 @@ function ModelChecklist({ models, selected, setSelected, downloadState, onRefres
             ${!m.available && !hasUrl && !isDownloadingThis && html`
               <div style=${{ marginLeft: "28px", marginTop: "4px", display: "flex", gap: "6px" }}>
                 <input class="input" style=${{ padding: "4px 8px", fontSize: "10px" }}
-                       placeholder=${`paste URL or drop file at ~/.blurdetector/models/${m.filename || m.name}`}
+                       placeholder=${`paste URL or drop file at ~/.snapgrade/models/${m.filename || m.name}`}
                        value=${customUrl[m.name] || ""}
                        onChange=${(e) => setCustomUrl({ ...customUrl, [m.name]: e.target.value })} />
               </div>`}

@@ -1,7 +1,7 @@
 """Lazy on-disk cache for MediaPipe Tasks model files.
 
-Models are tiny (≤ a few MB) and downloaded once into ~/.blurdetector/models/.
-Set BLURDETECTOR_MODELS_DIR to override.
+Models are tiny (≤ a few MB) and downloaded once into ~/.snapgrade/models/.
+Set SNAPGRADE_MODELS_DIR to override.
 """
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-MODELS_DIR = Path(os.environ.get("BLURDETECTOR_MODELS_DIR", Path.home() / ".blurdetector" / "models"))
+MODELS_DIR = Path(os.environ.get("SNAPGRADE_MODELS_DIR", Path.home() / ".snapgrade" / "models"))
 
-# Community model host. Override the whole base with BLURDETECTOR_MODELS_REPO
+# Community model host. Override the whole base with SNAPGRADE_MODELS_REPO
 # (e.g. a fork or a local mirror) without touching individual entries.
 MODELS_REPO_RAW = os.environ.get(
-    "BLURDETECTOR_MODELS_REPO",
+    "SNAPGRADE_MODELS_REPO",
     "https://raw.githubusercontent.com/Bibyutatsu/macos-computer-vision-models/main/models",
 )
 
@@ -40,7 +40,7 @@ _REGISTRY = {
     "screendoc": ("screendoc.mlpackage", f"{MODELS_REPO_RAW}/screendoc.mlpackage.zip"),
 }
 
-# Optional models a fresh install can pull in one shot (`blurdetector setup`).
+# Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
 OPTIONAL_MODELS = ("u2netp", "yolov8n", "nima", "places365", "places365_labels", "screendoc")
 

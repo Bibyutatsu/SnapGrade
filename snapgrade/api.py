@@ -24,7 +24,7 @@ from . import db, decide, group, models as db_models, organize, pipeline, thumb,
 UI_DIR = Path(__file__).parent.parent / "ui"
 INGEST_STATE: dict[str, Any] = {"running": False, "folder": None, "done": 0, "total": None, "error": None}
 
-app = FastAPI(title="BlurDetector", version="0.1.0")
+app = FastAPI(title="SnapGrade", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -224,7 +224,7 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
 _AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
 
 # Public URLs for small model weights, built from the community model host
-# (blurdetector.models.MODELS_REPO_RAW). The user can override per-request via
+# (snapgrade.models.MODELS_REPO_RAW). The user can override per-request via
 # the `url` query param to /download.
 _REPO = db_models.MODELS_REPO_RAW
 MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
@@ -242,7 +242,7 @@ def _available_models() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for name in _AVAILABLE_MODEL_NAMES:
         try:
-            mod = __import__(f"blurdetector.metrics.{name}", fromlist=["is_available"])
+            mod = __import__(f"snapgrade.metrics.{name}", fromlist=["is_available"])
             avail = bool(mod.is_available())
         except Exception:
             avail = False
@@ -274,11 +274,11 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
         raise HTTPException(
             400,
             f"No public URL is registered for '{name}'. Pass ?url=... to specify one, "
-            f"or drop the weights at ~/.blurdetector/models/{filename} manually.",
+            f"or drop the weights at ~/.snapgrade/models/{filename} manually.",
         )
     if DOWNLOAD_STATE["running"]:
         raise HTTPException(409, "another model download is in progress")
-    dest = Path.home() / ".blurdetector" / "models" / filename
+    dest = Path.home() / ".snapgrade" / "models" / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     def _run() -> None:
@@ -296,7 +296,7 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
             ctx = None
 
         def _fetch(url: str, fh) -> None:
-            req = urllib.request.Request(url, headers={"User-Agent": "BlurDetector/0.1"})
+            req = urllib.request.Request(url, headers={"User-Agent": "SnapGrade/0.1"})
             with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
                 total = int(resp.headers.get("Content-Length") or 0)
                 if total:

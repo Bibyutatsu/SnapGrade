@@ -11,7 +11,7 @@ from rich.table import Table
 
 from . import db, events, group, models, organize, pipeline, report, xmp
 
-app = typer.Typer(help="BlurDetector — local photo triage and organizer.")
+app = typer.Typer(help="SnapGrade — local photo triage and organizer.")
 console = Console()
 
 _VERDICT_STYLE = {"keeper": "green", "review": "yellow", "reject": "red"}
@@ -37,7 +37,7 @@ def _verdict_table(rows: list[dict]) -> Table:
 @app.command()
 def analyze(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, resolve_path=True),
-    db_path: Path = typer.Option(None, "--db", help="SQLite DB path (default ~/.blurdetector/library.db)"),
+    db_path: Path = typer.Option(None, "--db", help="SQLite DB path (default ~/.snapgrade/library.db)"),
     force: bool = typer.Option(False, "--force", help="Re-analyze even if cached"),
     max_edge: int = typer.Option(2000, "--max-edge", help="Long-edge size for analysis"),
     workers: int = typer.Option(0, "--workers", help="Thread count (0 = auto)"),
@@ -132,7 +132,7 @@ def organize_cmd(
         ...,
         "--level",
         "-l",
-        help="Organize token per level (repeat). Use `blurdetector tokens` to list.",
+        help="Organize token per level (repeat). Use `snapgrade tokens` to list.",
     ),
     db_path: Path = typer.Option(None, "--db"),
     mode: str = typer.Option("symlink", "--mode", help="symlink | hardlink | copy | move"),
@@ -208,7 +208,7 @@ def setup_cmd(
 
     YuNet + FaceLandmarker are fetched automatically on first analyze, so this
     only pulls the opt-in models (U²-Netp, YOLOv8n, NIMA, Places365, screendoc).
-    Run once on a fresh machine; weights land in ~/.blurdetector/models/.
+    Run once on a fresh machine; weights land in ~/.snapgrade/models/.
     """
     wanted = [m.strip() for m in only.split(",") if m.strip()] or list(models.OPTIONAL_MODELS)
     unknown = [m for m in wanted if m not in models.OPTIONAL_MODELS and m != "places365_labels"]
@@ -249,7 +249,7 @@ def serve(
     """Run the FastAPI backend + UI."""
     import uvicorn
 
-    uvicorn.run("blurdetector.api:app", host=host, port=port, reload=reload)
+    uvicorn.run("snapgrade.api:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

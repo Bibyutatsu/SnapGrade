@@ -1,7 +1,7 @@
 """Screenshot / document / photo classifier (tiny MobileNetV3-Small head).
 
-Drop a CoreML model at ~/.blurdetector/models/screendoc.mlpackage (or set
-BLURDETECTOR_SCREENDOC_MODEL). The model must emit probs for the three
+Drop a CoreML model at ~/.snapgrade/models/screendoc.mlpackage (or set
+SNAPGRADE_SCREENDOC_MODEL). The model must emit probs for the three
 classes [screenshot, document, photo] in that order.
 
 Falls back to a heuristic when no model is present and the user opts in:
@@ -41,10 +41,10 @@ def is_confident(result: dict[str, Any]) -> bool:
 
 
 def _model_path() -> Path | None:
-    p = os.environ.get("BLURDETECTOR_SCREENDOC_MODEL")
+    p = os.environ.get("SNAPGRADE_SCREENDOC_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".blurdetector" / "models" / "screendoc.mlpackage"
+    default = Path.home() / ".snapgrade" / "models" / "screendoc.mlpackage"
     return default if default.exists() else None
 
 

@@ -1,4 +1,4 @@
-# BlurDetector
+# SnapGrade
 
 Local, privacy-respecting photo triage and organizer. Detects blur, out-of-focus subjects, closed eyes, exposure problems; groups bursts; organizes folders by EXIF + quality. Designed to run comfortably on a MacBook Air with 8 GB RAM — classical CV plus tiny purpose-built models, no large transformers.
 
@@ -25,8 +25,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone and install
 
 ```bash
-git clone https://github.com/your-org/BlurDetector.git
-cd BlurDetector
+git clone https://github.com/your-org/SnapGrade.git
+cd SnapGrade
 uv sync --all-extras
 ```
 
@@ -35,22 +35,22 @@ This installs the core package plus all optional extras (API server, dev tools).
 ### 3. Verify
 
 ```bash
-uv run blurdetector --help
+uv run snapgrade --help
 ```
 
 ---
 
 ## Model Weights
 
-BlurDetector uses several small models for different analysis tasks. **`uv sync` installs the Python packages, not the model weights** — weights are fetched separately (once) from the community model host [`Bibyutatsu/macos-computer-vision-models`](https://github.com/Bibyutatsu/macos-computer-vision-models).
+SnapGrade uses several small models for different analysis tasks. **`uv sync` installs the Python packages, not the model weights** — weights are fetched separately (once) from the community model host [`Bibyutatsu/macos-computer-vision-models`](https://github.com/Bibyutatsu/macos-computer-vision-models).
 
 ### Fastest path — one command
 
 ```bash
-uv run blurdetector setup
+uv run snapgrade setup
 ```
 
-This downloads every optional model (U²-Netp, YOLOv8n CoreML, NIMA, Places365 + labels, screendoc) into `~/.blurdetector/models/`. YuNet + MediaPipe FaceLandmarker are *not* included — they auto-download on first `analyze`. Use `--only u2netp,yolov8n` for a subset, `--force` to re-download.
+This downloads every optional model (U²-Netp, YOLOv8n CoreML, NIMA, Places365 + labels, screendoc) into `~/.snapgrade/models/`. YuNet + MediaPipe FaceLandmarker are *not* included — they auto-download on first `analyze`. Use `--only u2netp,yolov8n` for a subset, `--force` to re-download.
 
 You can also download each model on demand from the **Library tab** in the web UI (a "Download" button appears next to any model whose weights are missing).
 
@@ -65,7 +65,7 @@ You can also download each model on demand from the **Library tab** in the web U
 | Places365 (CoreML) | Scene classifier (adds `scene` organizer token) | ~20 MB | `setup` / UI button (pulls labels too) |
 | screendoc (CoreML) | Screenshot / document detection | ~3 MB | `setup` / UI button. Falls back to a palette/saturation heuristic when absent. |
 
-Weights are cached to `~/.blurdetector/models/`. Override the cache dir with `BLURDETECTOR_MODELS_DIR`, or point at a fork/mirror of the model host with `BLURDETECTOR_MODELS_REPO`.
+Weights are cached to `~/.snapgrade/models/`. Override the cache dir with `SNAPGRADE_MODELS_DIR`, or point at a fork/mirror of the model host with `SNAPGRADE_MODELS_REPO`.
 
 The optional models are **opt-in per library**: the Library tab's ingest dialog shows a checkbox for each model whose weights are present. Your selection is recorded against the library, so re-ingest and per-library Sync only run what was selected.
 
@@ -82,15 +82,15 @@ Easiest path — click **Download** next to "Salient subject seg" on the Library
 Manual:
 
 ```bash
-mkdir -p ~/.blurdetector/models
+mkdir -p ~/.snapgrade/models
 curl -L "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx" \
-     -o ~/.blurdetector/models/u2netp.onnx
+     -o ~/.snapgrade/models/u2netp.onnx
 ```
 
 Custom path:
 
 ```bash
-export BLURDETECTOR_U2NETP_MODEL=/path/to/u2netp.onnx
+export SNAPGRADE_U2NETP_MODEL=/path/to/u2netp.onnx
 ```
 
 ---
@@ -104,7 +104,7 @@ Adds COCO class detections (person / pet / food / vehicle / etc.) used both as o
 ```bash
 uv add ultralytics            # one-time, if not already installed
 uv run python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx')"
-mv yolov8n.onnx ~/.blurdetector/models/
+mv yolov8n.onnx ~/.snapgrade/models/
 ```
 
 `YOLO('yolov8n.pt')` auto-fetches the .pt weights from Ultralytics on first run (~6 MB). The exported ONNX is ~12 MB.
@@ -112,7 +112,7 @@ mv yolov8n.onnx ~/.blurdetector/models/
 Custom path:
 
 ```bash
-export BLURDETECTOR_YOLO_MODEL=/path/to/yolov8n.onnx
+export SNAPGRADE_YOLO_MODEL=/path/to/yolov8n.onnx
 ```
 
 ---
@@ -128,7 +128,7 @@ uv add insightface
 Then run the `faces` command — InsightFace downloads `buffalo_s` automatically on the first call:
 
 ```bash
-uv run blurdetector faces --db ~/.blurdetector/library.db
+uv run snapgrade faces --db ~/.snapgrade/library.db
 ```
 
 The pack (~17 MB) is saved to `~/.insightface/models/buffalo_s/`.
@@ -181,10 +181,10 @@ print("Saved nima.mlpackage")
 uv run python convert_nima.py
 ```
 
-#### Step 4 — point BlurDetector at the model
+#### Step 4 — point SnapGrade at the model
 
 ```bash
-export BLURDETECTOR_NIMA_MODEL="$(pwd)/nima.mlpackage"
+export SNAPGRADE_NIMA_MODEL="$(pwd)/nima.mlpackage"
 ```
 
 Add that export to your shell profile (`~/.zshrc`) to make it permanent. If the variable is unset, aesthetic scoring is silently skipped and all other analysis continues normally.
@@ -195,16 +195,16 @@ Add that export to your shell profile (`~/.zshrc`) to make it permanent. If the 
 
 ```bash
 # Analyze a folder (auto-downloads YuNet + FaceLandmarker on first run)
-uv run blurdetector analyze /path/to/photos
+uv run snapgrade analyze /path/to/photos
 
 # Show cached verdicts without re-analyzing
-uv run blurdetector show /path/to/photos
+uv run snapgrade show /path/to/photos
 
 # Write XMP sidecars (ratings/labels readable by Lightroom, darktable, Bridge)
-uv run blurdetector write-xmp /path/to/photos
+uv run snapgrade write-xmp /path/to/photos
 
 # Start the web UI + API
-uv run blurdetector serve
+uv run snapgrade serve
 # → http://127.0.0.1:8765
 ```
 
@@ -214,7 +214,7 @@ uv run blurdetector serve
 
 | Command | Description |
 |---|---|
-| `analyze <folder>` | Recursively analyze, store results in `~/.blurdetector/library.db` |
+| `analyze <folder>` | Recursively analyze, store results in `~/.snapgrade/library.db` |
 | `show <folder>` | Re-print cached verdicts without re-analyzing |
 | `write-xmp <folder>` | Emit XMP sidecars with ratings and labels |
 | `group` | Group burst sequences by perceptual hash + timestamp |
@@ -231,13 +231,13 @@ uv run blurdetector serve
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BLURDETECTOR_MODELS_DIR` | `~/.blurdetector/models` | Override model cache directory |
-| `BLURDETECTOR_YOLO_MODEL` | `~/.blurdetector/models/yolov8n.onnx` | Custom YOLOv8n path |
-| `BLURDETECTOR_U2NETP_MODEL` | `~/.blurdetector/models/u2netp.onnx` | Custom U²-Netp path |
-| `BLURDETECTOR_NIMA_MODEL` | `~/.blurdetector/models/nima.mlpackage` (auto-detected) | Path to NIMA `.mlpackage` / `.mlmodelc`. If unset and the default file is missing, aesthetic scoring is skipped. |
-| `BLURDETECTOR_SCENE_MODEL` | `~/.blurdetector/models/places365.mlpackage` | Custom Places365 path |
-| `BLURDETECTOR_SCENE_LABELS` | `~/.blurdetector/models/places365_labels.txt` | Newline-separated Places365 class labels |
-| `BLURDETECTOR_SCREENDOC_MODEL` | `~/.blurdetector/models/screendoc.mlpackage` | Custom screenshot/document head path |
+| `SNAPGRADE_MODELS_DIR` | `~/.snapgrade/models` | Override model cache directory |
+| `SNAPGRADE_YOLO_MODEL` | `~/.snapgrade/models/yolov8n.onnx` | Custom YOLOv8n path |
+| `SNAPGRADE_U2NETP_MODEL` | `~/.snapgrade/models/u2netp.onnx` | Custom U²-Netp path |
+| `SNAPGRADE_NIMA_MODEL` | `~/.snapgrade/models/nima.mlpackage` (auto-detected) | Path to NIMA `.mlpackage` / `.mlmodelc`. If unset and the default file is missing, aesthetic scoring is skipped. |
+| `SNAPGRADE_SCENE_MODEL` | `~/.snapgrade/models/places365.mlpackage` | Custom Places365 path |
+| `SNAPGRADE_SCENE_LABELS` | `~/.snapgrade/models/places365_labels.txt` | Newline-separated Places365 class labels |
+| `SNAPGRADE_SCREENDOC_MODEL` | `~/.snapgrade/models/screendoc.mlpackage` | Custom screenshot/document head path |
 
 ## Runtime dependencies for optional models
 

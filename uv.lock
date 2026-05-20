@@ -98,68 +98,6 @@ wheels = [
 ]
 
 [[package]]
-name = "blurdetector"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "certifi" },
-    { name = "coremltools" },
-    { name = "h5py" },
-    { name = "imagehash" },
-    { name = "insightface" },
-    { name = "mediapipe" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "onnxruntime", version = "1.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "opencv-python-headless" },
-    { name = "pillow" },
-    { name = "pillow-heif" },
-    { name = "pydantic" },
-    { name = "rawpy" },
-    { name = "rich" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-api = [
-    { name = "fastapi" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "certifi", specifier = ">=2024.2.2" },
-    { name = "coremltools", specifier = ">=9.0" },
-    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110" },
-    { name = "h5py", specifier = ">=3.16.0" },
-    { name = "imagehash", specifier = ">=4.3" },
-    { name = "insightface", specifier = ">=0.7.3" },
-    { name = "mediapipe", specifier = ">=0.10.14" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "onnxruntime", specifier = ">=1.24.3" },
-    { name = "opencv-python-headless", specifier = ">=4.9" },
-    { name = "pillow", specifier = ">=10.2" },
-    { name = "pillow-heif", specifier = ">=0.16" },
-    { name = "pydantic", specifier = ">=2.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "rawpy", specifier = ">=0.21" },
-    { name = "rich", specifier = ">=13.7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "torch", specifier = ">=2.12.0" },
-    { name = "torchvision", specifier = ">=0.27.0" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.29" },
-]
-provides-extras = ["api", "dev"]
-
-[[package]]
 name = "cattrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3058,6 +2996,68 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
+
+[[package]]
+name = "snapgrade"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "certifi" },
+    { name = "coremltools" },
+    { name = "h5py" },
+    { name = "imagehash" },
+    { name = "insightface" },
+    { name = "mediapipe" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "opencv-python-headless" },
+    { name = "pillow" },
+    { name = "pillow-heif" },
+    { name = "pydantic" },
+    { name = "rawpy" },
+    { name = "rich" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+api = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "certifi", specifier = ">=2024.2.2" },
+    { name = "coremltools", specifier = ">=9.0" },
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110" },
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "imagehash", specifier = ">=4.3" },
+    { name = "insightface", specifier = ">=0.7.3" },
+    { name = "mediapipe", specifier = ">=0.10.14" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "onnxruntime", specifier = ">=1.24.3" },
+    { name = "opencv-python-headless", specifier = ">=4.9" },
+    { name = "pillow", specifier = ">=10.2" },
+    { name = "pillow-heif", specifier = ">=0.16" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "rawpy", specifier = ">=0.21" },
+    { name = "rich", specifier = ">=13.7" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "torch", specifier = ">=2.12.0" },
+    { name = "torchvision", specifier = ">=0.27.0" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.29" },
+]
+provides-extras = ["api", "dev"]
 
 [[package]]
 name = "sounddevice"

@@ -35,7 +35,7 @@ def t(fn, *args, **kwargs):
 
 
 def test_decode() -> None:
-    from blurdetector import decode
+    from snapgrade import decode
 
     banner("decode.py")
     for name in ["DSC_0001.JPG", "DSC_0038.JPG"]:
@@ -45,7 +45,7 @@ def test_decode() -> None:
 
 
 def test_exif() -> None:
-    from blurdetector import exif
+    from snapgrade import exif
 
     banner("exif.py")
     for name in ["DSC_0001.JPG", "DSC_0038.JPG"]:
@@ -56,8 +56,8 @@ def test_exif() -> None:
 
 
 def test_sharpness() -> None:
-    from blurdetector import decode
-    from blurdetector.metrics import sharpness
+    from snapgrade import decode
+    from snapgrade.metrics import sharpness
 
     banner("sharpness.py — expect blurry < controls")
     cases = LABELED["blurry"] + LABELED["out_of_focus_subject"] + CONTROLS
@@ -71,8 +71,8 @@ def test_sharpness() -> None:
 
 
 def test_subject_and_subject_sharpness() -> None:
-    from blurdetector import decode
-    from blurdetector.metrics import sharpness, subject
+    from snapgrade import decode
+    from snapgrade.metrics import sharpness, subject
 
     banner("subject.py + subject-aware sharpness")
     cases = LABELED["out_of_focus_subject"] + LABELED["eyes_closed"][:2] + CONTROLS[:1]
@@ -90,8 +90,8 @@ def test_subject_and_subject_sharpness() -> None:
 
 
 def test_eyes() -> None:
-    from blurdetector import decode
-    from blurdetector.metrics import eyes
+    from snapgrade import decode
+    from snapgrade.metrics import eyes
 
     banner("eyes.py — expect any_closed=True on labeled set")
     cases = LABELED["eyes_closed"] + CONTROLS[:2]
@@ -105,8 +105,8 @@ def test_eyes() -> None:
 
 
 def test_exposure_noise_composition() -> None:
-    from blurdetector import decode
-    from blurdetector.metrics import composition, exposure, noise, subject
+    from snapgrade import decode
+    from snapgrade.metrics import composition, exposure, noise, subject
 
     banner("exposure.py / noise.py / composition.py")
     for name in ["DSC_0001.JPG", "DSC_0015.JPG"]:
@@ -124,8 +124,8 @@ def test_exposure_noise_composition() -> None:
 
 
 def test_phash() -> None:
-    from blurdetector import decode
-    from blurdetector.metrics import phash
+    from snapgrade import decode
+    from snapgrade.metrics import phash
 
     banner("phash.py")
     p1 = phash.compute(decode.decode(IMG / "DSC_0001.JPG").rgb)
@@ -136,7 +136,7 @@ def test_phash() -> None:
 
 
 def test_decide_end_to_end() -> None:
-    from blurdetector import pipeline
+    from snapgrade import pipeline
 
     banner("pipeline.analyze_one — end-to-end")
     for name in ["DSC_0038.JPG", "DSC_0009.JPG", "DSC_0001.JPG", "DSC_0015.JPG"]:

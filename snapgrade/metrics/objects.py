@@ -1,7 +1,7 @@
 """Object detector via YOLOv8n ONNX (~6 MB, COCO classes).
 
-Drop the model at ~/.blurdetector/models/yolov8n.onnx (or set
-BLURDETECTOR_YOLO_MODEL). Optional labels file at yolov8n_labels.txt;
+Drop the model at ~/.snapgrade/models/yolov8n.onnx (or set
+SNAPGRADE_YOLO_MODEL). Optional labels file at yolov8n_labels.txt;
 defaults to the canonical COCO 80 list when missing.
 
 Returns: list of top detections (class, confidence, bbox) + primary class.
@@ -66,15 +66,15 @@ _COCO80 = [
 
 
 def _model_path() -> Path | None:
-    p = os.environ.get("BLURDETECTOR_YOLO_MODEL")
+    p = os.environ.get("SNAPGRADE_YOLO_MODEL")
     if p and Path(p).exists():
         return Path(p)
     # Prefer CoreML first
-    default_cml = Path.home() / ".blurdetector" / "models" / "yolov8n.mlpackage"
+    default_cml = Path.home() / ".snapgrade" / "models" / "yolov8n.mlpackage"
     if default_cml.exists():
         return default_cml
     # Fallback to ONNX
-    default_onnx = Path.home() / ".blurdetector" / "models" / "yolov8n.onnx"
+    default_onnx = Path.home() / ".snapgrade" / "models" / "yolov8n.onnx"
     return default_onnx if default_onnx.exists() else None
 
 
