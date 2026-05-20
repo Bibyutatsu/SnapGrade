@@ -107,11 +107,12 @@ def group_cmd(
     db_path: Path = typer.Option(None, "--db"),
     hamming: int = typer.Option(10, "--hamming", help="Max phash hamming distance to merge"),
     seconds: int = typer.Option(3, "--seconds", help="Max capture-time gap within a burst"),
+    library_id: int | None = typer.Option(None, "--library-id", help="Restrict clustering to one library (folder)"),
 ) -> None:
     """Cluster bursts and pick the best frame per burst."""
     conn = db.connect(db_path) if db_path else db.connect()
     cfg = group.BurstConfig(hamming_threshold=hamming, time_window_seconds=seconds)
-    bursts = group.group_bursts(conn, cfg)
+    bursts = group.group_bursts(conn, cfg, library_id=library_id)
     console.print(f"Found [bold]{len(bursts)}[/] bursts.")
     for b in bursts:
         console.print(f"  burst #{b.burst_id}: {len(b.image_ids)} frames, best = image #{b.best_image_id}")

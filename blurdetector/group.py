@@ -68,12 +68,17 @@ def _quality_score(metrics: dict, cfg: BurstConfig) -> float:
     )
 
 
-def _load_candidates(conn: sqlite3.Connection) -> list[dict]:
+def _load_candidates(conn: sqlite3.Connection, library_id: int | None = None) -> list[dict]:
+    where = "WHERE i.phash IS NOT NULL"
+    params: list = []
+    if library_id is not None:
+        where += " AND i.library_id = ?"
+        params.append(library_id)
     rows = conn.execute(
-        "SELECT i.id, i.capture_time, i.phash, m.json AS metrics_json "
-        "FROM images i JOIN metrics m ON m.image_id = i.id "
-        "WHERE i.phash IS NOT NULL "
-        "ORDER BY i.capture_time NULLS LAST, i.id"
+        f"SELECT i.id, i.capture_time, i.phash, i.library_id, m.json AS metrics_json "
+        f"FROM images i JOIN metrics m ON m.image_id = i.id "
+        f"{where} ORDER BY i.capture_time NULLS LAST, i.id",
+        params,
     ).fetchall()
     out: list[dict] = []
     for r in rows:
@@ -82,15 +87,20 @@ def _load_candidates(conn: sqlite3.Connection) -> list[dict]:
                 "id": int(r["id"]),
                 "time": _parse_time(r["capture_time"]),
                 "phash": r["phash"],
+                "library_id": r["library_id"],
                 "metrics": json.loads(r["metrics_json"]) if r["metrics_json"] else {},
             }
         )
     return out
 
 
-def group_bursts(conn: sqlite3.Connection, cfg: BurstConfig | None = None) -> list[Burst]:
+def group_bursts(
+    conn: sqlite3.Connection,
+    cfg: BurstConfig | None = None,
+    library_id: int | None = None,
+) -> list[Burst]:
     cfg = cfg or BurstConfig()
-    items = _load_candidates(conn)
+    items = _load_candidates(conn, library_id=library_id)
     n = len(items)
     if n == 0:
         return []
@@ -108,6 +118,9 @@ def group_bursts(conn: sqlite3.Connection, cfg: BurstConfig | None = None) -> li
                     break
             elif a["time"] or b["time"]:
                 continue
+            # Never merge across libraries; NULL library_id pairs freely with other NULLs.
+            if a["library_id"] != b["library_id"]:
+                continue
             if hamming(a["phash"], b["phash"]) <= cfg.hamming_threshold:
                 uf.union(i, j)
 
@@ -117,8 +130,19 @@ def group_bursts(conn: sqlite3.Connection, cfg: BurstConfig | None = None) -> li
 
     bursts: list[Burst] = []
     with db.transaction(conn):
-        conn.execute("DELETE FROM burst_members")
-        conn.execute("DELETE FROM bursts")
+        if library_id is not None:
+            conn.execute(
+                "DELETE FROM burst_members WHERE image_id IN "
+                "(SELECT id FROM images WHERE library_id = ?)",
+                [library_id],
+            )
+            conn.execute(
+                "DELETE FROM bursts WHERE id NOT IN "
+                "(SELECT DISTINCT burst_id FROM burst_members)"
+            )
+        else:
+            conn.execute("DELETE FROM burst_members")
+            conn.execute("DELETE FROM bursts")
         for member_idxs in clusters.values():
             if len(member_idxs) < 2:
                 continue

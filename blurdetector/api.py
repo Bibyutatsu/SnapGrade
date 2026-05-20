@@ -583,10 +583,12 @@ def ingest(
 
 
 @app.post("/api/group")
-def regroup(hamming: int = 10, seconds: int = 3) -> dict[str, Any]:
+def regroup(hamming: int = 10, seconds: int = 3, library_id: int | None = Query(None)) -> dict[str, Any]:
     conn = _conn()
     bursts = group.group_bursts(
-        conn, group.BurstConfig(hamming_threshold=hamming, time_window_seconds=seconds)
+        conn,
+        group.BurstConfig(hamming_threshold=hamming, time_window_seconds=seconds),
+        library_id=library_id,
     )
     db.cleanup_orphan_bursts(conn)
     return {"bursts": len(bursts)}
