@@ -189,5 +189,16 @@
 
     organize(payload) { return jpost('/api/organize', payload); },
     reclassify(t) { return jpost('/api/reclassify', t); },
+
+    loadImageMetrics(id) { return jget(`/api/images/${id}`); },
+    regroup({ hamming = 10, seconds = 3 } = {}) {
+      const qs = new URLSearchParams({ hamming, seconds });
+      return jpost(`/api/group?${qs.toString()}`);
+    },
+    runFaces({ incremental = false } = {}) {
+      const qs = new URLSearchParams({ incremental: incremental ? 'true' : 'false' });
+      return jpost(`/api/faces/run?${qs.toString()}`);
+    },
+    loadClusters() { return jget('/api/faces/clusters').then(r => r.items || []); },
   };
 })();

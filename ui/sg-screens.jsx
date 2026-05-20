@@ -194,9 +194,30 @@ function BurstsScreen() {
     return burst.images.filter(img => img.library_id === activeLib);
   }, [burst, activeLib]);
 
+  const [grouping, setGrouping] = useState(false);
+  const [groupMsg, setGroupMsg] = useState('');
+  async function regroup() {
+    setGrouping(true); setGroupMsg('');
+    try {
+      const r = await window.SG_API.regroup({ hamming: 10, seconds: 3 });
+      setGroupMsg(`grouped → ${r.bursts ?? 0} bursts`);
+      await window.SG_API.refresh();
+      setTimeout(() => location.reload(), 500);
+    } catch (e) { setGroupMsg(`regroup failed: ${e.message}`); }
+    finally { setGrouping(false); }
+  }
+
   return (
     <div style={{ display:'flex', flex:1, minHeight:0, overflow:'hidden', flexDirection:'column' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
+      <div style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0 }}>
+        <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
+          Bursts grouped by pHash hamming · time window
+        </span>
+        <div style={{ flex:1 }} />
+        {groupMsg && <span className="sg-toast" style={{ marginTop:0 }}>{groupMsg}</span>}
+        <Btn variant="primary" disabled={grouping} onClick={regroup}>{grouping ? 'Regrouping…' : 'Regroup'}</Btn>
+      </div>
       <div style={{ display:'flex', flex:1, minHeight:0, overflow:'hidden' }}>
         <div className="sg-lib-rail" style={{ width:190 }}>
           <div className="sg-lib-rail-head">Burst groups · {visibleBursts.length}</div>
@@ -282,39 +303,84 @@ function BurstsScreen() {
 }
 
 // ── Face Clusters Screen ──────────────────────────────────────────────────────
-const CLUSTER_LIB_MAP = { 1: 1, 2: 1, 3: 2, 4: 2 };
-
 function FacesScreen() {
-  const { MOCK_CLUSTERS, MOCK_LIBRARIES } = window.SG_DATA;
+  const { MOCK_LIBRARIES } = window.SG_DATA;
   const [activeLib, setActiveLib] = useState(null);
   const [expanded, setExpanded]   = useState(null);
+  const [clusters, setClusters]   = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [running, setRunning]     = useState(false);
+  const [runMsg, setRunMsg]       = useState('');
   useEffect(() => { setExpanded(null); }, [activeLib]);
 
-  const visibleClusters = useMemo(() => {
-    if (activeLib === null) return MOCK_CLUSTERS;
-    return MOCK_CLUSTERS.filter(c => CLUSTER_LIB_MAP[c.id] === activeLib);
-  }, [MOCK_CLUSTERS, activeLib]);
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try { setClusters(await window.SG_API.loadClusters()); }
+    catch (e) { console.error('loadClusters failed:', e); setClusters([]); }
+    finally { setLoading(false); }
+  }, []);
 
-  const clusterCount = c => activeLib === null ? c.count : activeLib === 1 ? Math.ceil(c.count * 0.65) : Math.floor(c.count * 0.35);
+  useEffect(() => { reload(); }, [reload]);
+
+  // Poll /api/stats.faces while a run is in flight; reload clusters on finish.
+  useEffect(() => {
+    if (!running) return;
+    let alive = true;
+    const id = setInterval(async () => {
+      const s = await window.SG_API.refreshStats();
+      if (!alive || !s) return;
+      const f = s.faces || {};
+      if (!f.running) {
+        clearInterval(id);
+        setRunning(false);
+        setRunMsg(f.error ? `failed: ${f.error}` : `clustered ${f.clusters} groups · ${f.detected} new faces`);
+        reload();
+      }
+    }, 1500);
+    return () => { alive = false; clearInterval(id); };
+  }, [running, reload]);
+
+  async function runClustering() {
+    setRunMsg(''); setRunning(true);
+    try { await window.SG_API.runFaces(); }
+    catch (e) { setRunning(false); setRunMsg(`launch failed: ${e.message}`); }
+  }
+
+  const visibleClusters = clusters;  // /api/faces/clusters doesn't expose
+                                     // per-library mapping yet — show all.
 
   const libCounts = useMemo(() => {
-    const counts = { all: MOCK_CLUSTERS.length };
-    MOCK_LIBRARIES.forEach(lib => { counts[lib.id] = MOCK_CLUSTERS.filter(c => CLUSTER_LIB_MAP[c.id] === lib.id).length; });
+    const counts = { all: visibleClusters.length };
+    MOCK_LIBRARIES.forEach(lib => { counts[lib.id] = visibleClusters.length; });
     return counts;
-  }, [MOCK_CLUSTERS, MOCK_LIBRARIES]);
+  }, [visibleClusters, MOCK_LIBRARIES]);
 
   const cluster = expanded !== null ? visibleClusters.find(c => c.id === expanded) : null;
 
   return (
     <div style={{ display:'flex', flex:1, minHeight:0, flexDirection:'column', overflow:'hidden' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
+      <div style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0 }}>
+        <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
+          {clusters.length} cluster{clusters.length === 1 ? '' : 's'} · InsightFace + greedy/HNSW
+        </span>
+        <div style={{ flex:1 }} />
+        {runMsg && <span className="sg-toast" style={{ marginTop:0 }}>{runMsg}</span>}
+        <Btn variant="primary" disabled={running} onClick={runClustering}>
+          {running ? 'Clustering…' : 'Run face clustering'}
+        </Btn>
+      </div>
       <div className="sg-scroll">
         <div className="sg-page">
           <p className="sg-lede">Faces grouped by similarity across the library. Identify recurring subjects and curate by person.</p>
           {!cluster ? (
             <>
-              {visibleClusters.length === 0 ? (
-                <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>No face clusters in this folder</div>
+              {loading ? (
+                <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>Loading clusters…</div>
+              ) : visibleClusters.length === 0 ? (
+                <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>
+                  No face clusters yet — press "Run face clustering".
+                </div>
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:16, marginBottom:32 }}>
                   {visibleClusters.map(c => (
@@ -331,7 +397,7 @@ function FacesScreen() {
                       <div style={{ padding:'12px 14px' }}>
                         <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:18, color:'var(--c-text)', marginBottom:4 }}>{c.label}</div>
                         <div style={{ fontSize:10, color:'var(--c-mute)', display:'flex', justifyContent:'space-between' }}>
-                          <span>{clusterCount(c)} appearances</span>
+                          <span>{c.count} appearances</span>
                           <span style={{ color:'var(--c-accent)' }}>View all →</span>
                         </div>
                       </div>
@@ -339,9 +405,6 @@ function FacesScreen() {
                   ))}
                 </div>
               )}
-              <div style={{ fontSize:10, color:'var(--c-mute)', textAlign:'center', letterSpacing:'0.18em', textTransform:'uppercase' }}>
-                Run <code style={{ background:'var(--c-panel)', padding:'2px 6px', color:'var(--c-text2)' }}>snapgrade faces</code> to cluster faces across the library
-              </div>
             </>
           ) : (
             <>
@@ -350,7 +413,7 @@ function FacesScreen() {
                 <img src={cluster.rep_thumb} alt="" style={{ width:60, height:60, objectFit:'cover', borderRadius:'50%', border:'2px solid var(--c-border2)' }} />
                 <div>
                   <h2 style={{ fontFamily:'var(--font-display)', fontSize:28, fontWeight:400, margin:'0 0 4px', color:'var(--c-text)' }}>{cluster.label}</h2>
-                  <div style={{ fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase' }}>{clusterCount(cluster)} appearances{activeLib !== null ? ' in this folder' : ' across library'}</div>
+                  <div style={{ fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase' }}>{cluster.count} appearances across library</div>
                 </div>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:10 }}>

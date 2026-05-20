@@ -118,8 +118,12 @@ function applyFilters(images, f) {
     if (f.iso    !== 'all' && isoToBucket(img.iso)       !== f.iso)    return false;
     if (f.aperture !== 'all' && apertureToBucket(img.f_number) !== f.aperture) return false;
     if (f.orientation !== 'all' && orientationOf(img) !== f.orientation) return false;
-    if (f.date_from && img.capture_time < f.date_from) return false;
-    if (f.date_to   && img.capture_time > f.date_to + 'T23:59:59') return false;
+    if (f.date_from || f.date_to) {
+      const t = img.capture_time ? Date.parse(img.capture_time) : NaN;
+      if (isNaN(t)) return false;
+      if (f.date_from && t < Date.parse(f.date_from)) return false;
+      if (f.date_to   && t > Date.parse(f.date_to + 'T23:59:59')) return false;
+    }
     if (f.text_search && !img.path.toLowerCase().includes(f.text_search.toLowerCase())) return false;
     if (f.burst_only && !img.burst_id) return false;
     if (f.burst_best && !img.is_best) return false;
@@ -863,14 +867,6 @@ function ThumbCard({ item, selected, idx, onClick, onDoubleClick }) {
             {item.content_type === 'screenshot' ? '🖥' : '📄'} {item.content_type}
           </div>
         )}
-        {/* Dominant colour bar */}
-        {item.color?.dominant?.length > 0 && (
-          <div style={{ position:'absolute', bottom:30, left:0, right:0, height:3, display:'flex' }}>
-            {item.color.dominant.map(([r,g,b], i) => (
-              <div key={i} style={{ flex:1, background:`rgb(${r},${g},${b})` }} />
-            ))}
-          </div>
-        )}
         {/* OCR / animals micro-badges */}
         {(item.ocr?.length > 0 || item.animals?.length > 0) && (
           <div style={{ position:'absolute', bottom:33, right:5, display:'flex', gap:3 }}>
@@ -941,10 +937,10 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
     if(btn) strip.scrollLeft=btn.offsetLeft-strip.offsetWidth/2+btn.offsetWidth/2;
   },[selectedId]);
   return (
-    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
-      <div style={{flex:1,background:'#000',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden',cursor:'zoom-in',minHeight:0}}
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0}}>
+      <div style={{flex:1,background:'#000',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden',cursor:'zoom-in',minHeight:0,minWidth:0}}
         onDoubleClick={()=>selected&&onDoubleClick(selected.id)}>
-        {selected?<img key={selected.id} src={selected.preview} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',transition:'opacity .18s'}}/>
+        {selected?<img key={selected.id} src={selected.preview} alt="" style={{width:'100%',height:'100%',objectFit:'contain',display:'block',transition:'opacity .18s'}}/>
           :<div style={{color:'var(--c-mute)',fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:24}}>No frame</div>}
         <button onClick={onPrev} style={{position:'absolute',left:0,top:0,bottom:0,width:64,background:'linear-gradient(to right,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center'}}
           onMouseOver={e=>e.currentTarget.style.color='rgba(255,255,255,0.9)'} onMouseOut={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}>‹</button>
@@ -1002,6 +998,23 @@ function TriageScreen({ layout, setLayout }) {
 
   const selectedImage = images.find(i => i.id === selectedId) || null;
   const filteredIdx   = filtered.findIndex(i => i.id === selectedId);
+
+  // Lazy-fetch the full metrics blob (subjects, eyes, objects, …) for the
+  // currently-selected image, so DetailPanel / Lightbox can draw bboxes and
+  // the long-form tag row. Skipped if we already have it.
+  useEffect(() => {
+    if (!selectedId) return;
+    const img = images.find(i => i.id === selectedId);
+    if (!img || img.metrics) return;
+    let alive = true;
+    window.SG_API.loadImageMetrics(selectedId)
+      .then(full => {
+        if (!alive || !full) return;
+        setImages(imgs => imgs.map(it => it.id !== selectedId ? it : { ...it, metrics: full.metrics || {} }));
+      })
+      .catch(err => console.error('loadImageMetrics failed:', err));
+    return () => { alive = false; };
+  }, [selectedId, images]);
 
   const goPrev = useCallback(() => { if (filteredIdx > 0) setSelectedId(filtered[filteredIdx-1].id); }, [filtered, filteredIdx]);
   const goNext = useCallback(() => { if (filteredIdx < filtered.length-1) setSelectedId(filtered[filteredIdx+1].id); }, [filtered, filteredIdx]);

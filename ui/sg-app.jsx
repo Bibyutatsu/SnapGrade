@@ -10,18 +10,32 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 function App() {
-  const [tab, setTab]     = useState('triage');
+  const [tab, setTab] = useState(() => localStorage.getItem('sg.tab') || 'triage');
+  useEffect(() => { localStorage.setItem('sg.tab', tab); }, [tab]);
   const [collapsed, setCol] = useState(false);
   const [t, setTweak]     = useTweaks(TWEAK_DEFAULTS);
 
   const [stats, setStats] = useState(window.SG_DATA.MOCK_STATS);
+  // Bumped when SG_DATA is refreshed so screens that read window.SG_DATA at
+  // mount (Triage, Bursts, Faces, XMP) re-mount with fresh data.
+  const [dataVersion, setDataVersion] = useState(0);
   // Poll /api/stats while ingest is running so the sidebar's live indicator and
-  // counts reflect reality without a full reload.
+  // counts reflect reality without a full reload. When an ingest finishes
+  // (running flips true → false), do a full SG_DATA refresh so Triage picks up
+  // the new frames without the user reloading the page.
   useEffect(() => {
     let alive = true;
+    let prevRunning = false;
     const tick = async () => {
       const s = await window.SG_API.refreshStats();
-      if (alive && s) setStats(s);
+      if (!alive || !s) return;
+      setStats(s);
+      const running = !!s.ingest?.running;
+      if (prevRunning && !running) {
+        await window.SG_API.refresh().catch(() => {});
+        if (alive) setDataVersion(v => v + 1);
+      }
+      prevRunning = running;
     };
     tick();
     const id = setInterval(tick, 2500);
@@ -66,11 +80,11 @@ function App() {
             onThemeChange={v => setTweak('theme', v)}
           />
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
-            {tab === 'library'  && <LibraryScreen  stats={MOCK_STATS} />}
-            {tab === 'triage'   && <TriageScreen   layout={t.triageLayout} setLayout={v => setTweak('triageLayout', v)} />}
-            {tab === 'bursts'   && <BurstsScreen />}
-            {tab === 'faces'    && <FacesScreen />}
-            {tab === 'xmp'      && <XMPExportScreen />}
+            {tab === 'library'  && <LibraryScreen  key={`lib-${dataVersion}`}  stats={MOCK_STATS} />}
+            {tab === 'triage'   && <TriageScreen   key={`tri-${dataVersion}`}  layout={t.triageLayout} setLayout={v => setTweak('triageLayout', v)} />}
+            {tab === 'bursts'   && <BurstsScreen   key={`bur-${dataVersion}`} />}
+            {tab === 'faces'    && <FacesScreen    key={`fac-${dataVersion}`} />}
+            {tab === 'xmp'      && <XMPExportScreen key={`xmp-${dataVersion}`} />}
             {tab === 'organize' && <OrganizeScreen />}
             {tab === 'settings' && <SettingsScreen />}
           </div>

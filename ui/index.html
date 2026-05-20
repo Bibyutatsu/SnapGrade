@@ -184,6 +184,25 @@ html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
   background: var(--c-amber); box-shadow: 0 0 10px var(--c-amber);
   animation: sg-pulse 1.4s ease-in-out infinite; flex-shrink: 0;
 }
+.sg-progress-track {
+  height: 4px; background: var(--c-border); margin-top: 8px;
+  position: relative; overflow: hidden; border-radius: 2px;
+}
+.sg-progress-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--c-accent); transition: width .25s ease;
+}
+.sg-progress-indeterminate {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 30%; background: var(--c-accent);
+  animation: sg-indet 1.2s ease-in-out infinite;
+}
+@keyframes sg-indet { 0% { left: -30%; } 100% { left: 100%; } }
+.sg-progress-label {
+  display: flex; justify-content: space-between;
+  font-size: 8px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--c-text2); margin-top: 5px; font-variant-numeric: tabular-nums;
+}
 
 /* ── TOPBAR ─────────────────────────────────────────────────────────────────── */
 .sg-topbar {

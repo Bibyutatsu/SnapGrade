@@ -23,6 +23,7 @@ from . import db, decide, group, models as db_models, organize, pipeline, thumb,
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 INGEST_STATE: dict[str, Any] = {"running": False, "folder": None, "done": 0, "total": None, "error": None}
+FACES_STATE: dict[str, Any] = {"running": False, "stage": None, "detected": 0, "clusters": 0, "error": None}
 
 app = FastAPI(title="SnapGrade", version="0.1.0")
 
@@ -72,6 +73,7 @@ def stats() -> dict[str, Any]:
         "by_verdict": {r["verdict"]: int(r["c"]) for r in by_verdict},
         "bursts": int(bursts),
         "ingest": INGEST_STATE,
+        "faces": FACES_STATE,
     }
 
 
@@ -650,6 +652,82 @@ def list_bursts(library_id: int | None = Query(None)) -> dict[str, Any]:
 def get_burst(burst_id: int) -> dict[str, Any]:
     """All images in a burst, in the same shape as /api/images items."""
     return list_images(burst=burst_id, limit=200)
+
+
+@app.post("/api/faces/run")
+def faces_run(background: BackgroundTasks, incremental: bool = Query(False)) -> dict[str, Any]:
+    """Detect faces (InsightFace) and cluster them (greedy/HNSW), in background.
+    Status reported via /api/stats.faces."""
+    if FACES_STATE["running"]:
+        raise HTTPException(409, "face clustering already running")
+    from . import face_cluster
+
+    def _run() -> None:
+        FACES_STATE.update(running=True, stage="detect", detected=0, clusters=0, error=None)
+        try:
+            conn = _conn()
+            cfg = face_cluster.FaceClusterConfig()
+            FACES_STATE["detected"] = face_cluster.detect_and_store(conn, cfg)
+            FACES_STATE["stage"] = "cluster"
+            if incremental:
+                res = face_cluster.cluster_incremental(conn, cfg)
+                FACES_STATE["clusters"] = int(res.get("assigned_existing", 0)) + int(res.get("new_clusters", 0))
+            else:
+                FACES_STATE["clusters"] = int(face_cluster.cluster(conn, cfg))
+            FACES_STATE["stage"] = "done"
+        except Exception as e:
+            FACES_STATE["error"] = str(e)
+        finally:
+            FACES_STATE["running"] = False
+
+    background.add_task(_run)
+    return {"started": True, "incremental": incremental}
+
+
+@app.get("/api/faces/clusters")
+def faces_clusters(library_id: int | None = Query(None), thumbs_per: int = Query(12, ge=1, le=48)) -> dict[str, Any]:
+    """Cluster reps + member-image samples. Powers the Faces tab."""
+    conn = _conn()
+    # Best (highest-quality) face per cluster — image_id + bbox for crop hints.
+    from . import face_cluster
+    best = face_cluster.best_faces_per_cluster(conn)
+    if not best:
+        return {"items": []}
+    # Per-cluster counts and sampled member images, scoped by library_id if given.
+    items: list[dict[str, Any]] = []
+    for cid, rep in sorted(best.items()):
+        params: list[Any] = [cid]
+        scope_sql = ""
+        if library_id is not None:
+            scope_sql = " AND i.library_id = ?"
+            params.append(library_id)
+        cnt = conn.execute(
+            f"SELECT COUNT(DISTINCT f.image_id) AS c FROM faces f "
+            f"JOIN images i ON i.id = f.image_id WHERE f.cluster_id = ?{scope_sql}",
+            params,
+        ).fetchone()["c"]
+        if not cnt:
+            continue
+        rows = conn.execute(
+            f"SELECT DISTINCT f.image_id FROM faces f "
+            f"JOIN images i ON i.id = f.image_id WHERE f.cluster_id = ?{scope_sql} "
+            f"ORDER BY f.quality DESC NULLS LAST LIMIT ?",
+            [*params, thumbs_per],
+        ).fetchall()
+        items.append({
+            "id": int(cid),
+            "label": f"Cluster {cid}",
+            "count": int(cnt),
+            "rep_image_id": int(rep["image_id"]),
+            "rep_thumb": f"/api/images/{int(rep['image_id'])}/thumb?size=256",
+            "thumbs": [
+                {"id": int(r["image_id"]),
+                 "image_id": int(r["image_id"]),
+                 "url": f"/api/images/{int(r['image_id'])}/thumb?size=256"}
+                for r in rows
+            ],
+        })
+    return {"items": items}
 
 
 @app.get("/api/tokens")

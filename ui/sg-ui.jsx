@@ -80,7 +80,7 @@ function MetricTags({ image }) {
   const [ocrOpen, setOcrOpen] = useState(false);
   if (!image) return null;
 
-  const { content_type, scene, ocr = [], animals = [], color, reasons = [] } = image;
+  const { content_type, scene, ocr = [], animals = [], color, reasons = [], metrics } = image;
 
   // Content-type badge — only show when non-photo (or if screenshot/document)
   const CT_BADGE = {
@@ -88,8 +88,16 @@ function MetricTags({ image }) {
     document:   { bg: 'var(--c-accent)', label: 'document',   icon: '📄' },
   };
   const ctInfo = CT_BADGE[content_type];
+  const ctConf = metrics?.content_type?.conf;
+  const sceneConf = typeof metrics?.scene === 'object' ? metrics.scene.conf : null;
 
-  const hasAnything = ctInfo || scene || ocr.length > 0 || animals.length > 0 || color?.dominant?.length;
+  // YOLO object detections — distinct classes, most-confident first.
+  const objClasses = [];
+  for (const d of (metrics?.objects?.detections || [])) {
+    if (!objClasses.includes(d.class)) objClasses.push(d.class);
+  }
+
+  const hasAnything = ctInfo || scene || ocr.length > 0 || animals.length > 0 || color?.dominant?.length || objClasses.length > 0;
   if (!hasAnything) return null;
 
   const tagStyle = {
@@ -104,7 +112,7 @@ function MetricTags({ image }) {
                   borderTop: '1px dashed var(--c-border2)' }}>
 
       {/* ── Tags row ── */}
-      {(ctInfo || scene || animals.length > 0) && (
+      {(ctInfo || scene || animals.length > 0 || objClasses.length > 0) && (
         <div>
           <div className="sg-detail-label">Tags</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
@@ -112,16 +120,24 @@ function MetricTags({ image }) {
               <span style={{ ...tagStyle, background: ctInfo.bg,
                              color: 'var(--c-bg)', fontWeight: 600 }}>
                 {ctInfo.icon} {ctInfo.label}
+                {ctConf != null && <span style={{ marginLeft: 4, opacity: 0.7 }}>{Math.round(ctConf * 100)}%</span>}
               </span>
             )}
             {scene && (
               <span style={{ ...tagStyle,
                              border: '1px solid var(--c-border2)', color: 'var(--c-text2)' }}>
-                {scene}
+                ⛰ {scene}
+                {sceneConf != null && <span style={{ marginLeft: 4, opacity: 0.6, fontSize: 8 }}>{Math.round(sceneConf * 100)}%</span>}
               </span>
             )}
+            {objClasses.slice(0, 8).map(c => (
+              <span key={c} style={{ ...tagStyle,
+                                     border: '1px solid var(--c-border2)', color: 'var(--c-text2)' }}>
+                {c}
+              </span>
+            ))}
             {animals.map((a, i) => (
-              <span key={i} style={{ ...tagStyle,
+              <span key={`an${i}`} style={{ ...tagStyle,
                                      border: '1px solid var(--c-border2)', color: 'var(--c-text2)' }}>
                 🐾 {a.species}
                 <span style={{ fontSize: 8, opacity: 0.6 }}> {Math.round(a.confidence * 100)}%</span>
@@ -257,10 +273,28 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
           <div className="sg-foot-row"><span>Libraries</span><span>{pad(stats.libraries ?? 0, 3)}</span></div>
           <div className="sg-foot-row"><span>Frames</span><span>{pad(stats.images, 5)}</span></div>
           <div className="sg-foot-row"><span>Bursts</span><span>{pad(stats.bursts, 4)}</span></div>
-          {stats.ingest?.running && (
-            <div className="sg-live">
-              <span className="sg-live-dot" />
-              Ingest running
+          {stats.ingest?.running && (() => {
+            const done = stats.ingest.done || 0;
+            const total = stats.ingest.total || 0;
+            const pct = total > 0 ? Math.min(100, Math.round(100 * done / total)) : null;
+            return (
+              <div style={{ marginTop: 10 }}>
+                <div className="sg-live"><span className="sg-live-dot" />Ingest running</div>
+                <div className="sg-progress-track">
+                  {pct == null
+                    ? <div className="sg-progress-indeterminate" />
+                    : <div className="sg-progress-fill" style={{ width: `${pct}%` }} />}
+                </div>
+                <div className="sg-progress-label">
+                  <span>{done}{total ? ` / ${total}` : ''} frames</span>
+                  <span>{pct != null ? `${pct}%` : '…'}</span>
+                </div>
+              </div>
+            );
+          })()}
+          {stats.ingest?.error && (
+            <div style={{ marginTop:8, fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-danger)' }}>
+              ingest error · {stats.ingest.error.slice(0, 80)}
             </div>
           )}
         </div>
@@ -364,9 +398,48 @@ function TopBar({ tab, layout, onLayoutToggle, theme, onThemeChange }) {
   );
 }
 
+// Bbox overlay shared by DetailPanel + Lightbox. Subjects coords are in the
+// decoded image's pixel space; metrics.decoded_size = [w, h]. We map to % so it
+// scales with whatever the <img> rendered at.
+function bboxStyle(s, decoded) {
+  if (!decoded || !s?.bbox) return { display: 'none' };
+  const [dw, dh] = decoded;
+  const [x, y, w, h] = s.bbox;
+  return {
+    position: 'absolute',
+    left: `${100 * x / dw}%`, top: `${100 * y / dh}%`,
+    width: `${100 * w / dw}%`, height: `${100 * h / dh}%`,
+    border: `2px solid ${s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)'}`,
+    pointerEvents: 'none', boxSizing: 'border-box',
+  };
+}
+
+function SubjectOverlay({ subjects, decoded }) {
+  if (!subjects?.length || !decoded) return null;
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+      {subjects.map((s, i) => (
+        <div key={i} style={bboxStyle(s, decoded)}>
+          <span style={{
+            position: 'absolute', top: -16, left: 0,
+            fontSize: 8, letterSpacing: '0.18em', textTransform: 'uppercase',
+            padding: '1px 5px', fontFamily: 'var(--font-ui)',
+            background: s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)',
+            color: 'var(--c-bg)',
+          }}>
+            {s.is_primary ? 'subj' : (s.kind || 'obj')}
+            {s.confidence != null && <span style={{ marginLeft: 4, opacity: 0.8 }}>{Math.round(s.confidence * 100)}</span>}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── DetailPanel ───────────────────────────────────────────────────────────────
 function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
   const [xmpMsg, setXmpMsg] = useState('');
+  const [showBoxes, setShowBoxes] = useState(true);
 
   if (!image) return (
     <aside className="sg-detail" style={{ width: compact ? 280 : 380 }}>
@@ -388,7 +461,9 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
       {!compact && (
         <div className="sg-detail-preview" onClick={onOpenLightbox}
              style={{ cursor: 'zoom-in', position: 'relative' }}>
-          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block', filter: 'contrast(1.04)' }} />
+          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block', filter: 'contrast(1.04)' }}
+               onError={e => { if (e.currentTarget.src !== m.preview) e.currentTarget.src = m.preview; }} />
+          {showBoxes && <SubjectOverlay subjects={m.metrics?.subjects} decoded={m.metrics?.decoded_size} />}
           <div className="sg-corners" />
           <div className="sg-corners-br" />
           {/* Content-type badge on preview */}
@@ -410,6 +485,15 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
 
       <div className="sg-detail-body">
         <div className="sg-detail-path">{m.path.split('/').pop()}</div>
+
+        {!compact && m.metrics?.subjects?.length > 0 && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9,
+                          letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--c-text2)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)}
+                   style={{ accentColor: 'var(--c-accent)' }} />
+            Subject bboxes · {m.metrics.subjects.length}
+          </label>
+        )}
 
         {/* Verdict */}
         <div>
@@ -503,6 +587,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
+  const [showBoxes, setShowBoxes] = useState(true);
   useEffect(() => {
     const handler = e => {
       if (e.key === 'Escape')                      onClose();
@@ -528,12 +613,21 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
       <div className="sg-lb-content" onClick={e => e.stopPropagation()}>
         <div style={{ position: 'relative', display: 'inline-block' }}>
           <img src={image.preview} alt="" style={{
+            display: 'block',
             maxWidth: '86vw', maxHeight: '70vh', objectFit: 'contain',
             boxShadow: '0 30px 80px rgba(0,0,0,0.9)',
             border: '1px solid var(--c-border)',
+          }} onError={e => {
+            if (e.currentTarget.src !== image.thumb) {
+              console.warn('preview failed, falling back to thumb:', image.id);
+              e.currentTarget.src = image.thumb;
+            }
           }} />
+          {showBoxes && (
+            <SubjectOverlay subjects={image.metrics?.subjects} decoded={image.metrics?.decoded_size} />
+          )}
           {/* OCR overlay — light bounding boxes */}
-          {image.ocr?.length > 0 && image.preview && (
+          {showBoxes && image.ocr?.length > 0 && image.preview && (
             <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
               {image.ocr.map((r, i) => {
                 // bboxes are in orig-image coords; scale to displayed size
@@ -563,6 +657,15 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
           </h4>
           <p>{image.path}</p>
           <p style={{ marginTop: 4 }}>{image.camera_model} · f/{image.f_number} · {image.exposure_time} · ISO {image.iso}</p>
+          {(image.metrics?.subjects?.length > 0 || image.ocr?.length > 0) && (
+            <label style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:8,
+                            fontSize:9, letterSpacing:'.18em', textTransform:'uppercase',
+                            color:'var(--c-text2)', cursor:'pointer' }}>
+              <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)}
+                     style={{ accentColor:'var(--c-accent)' }} />
+              overlays
+            </label>
+          )}
           {/* Verdict + stars */}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
             {['keeper','review','reject'].map(v => {
