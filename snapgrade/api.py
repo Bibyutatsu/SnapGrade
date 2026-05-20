@@ -221,16 +221,16 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
     return {"started": True, "models": models}
 
 
-_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "content_type")
+_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "depth", "content_type")
 
-# Public URLs for small model weights, built from the community model host
-# (snapgrade.models.MODELS_REPO_RAW). The user can override per-request via
-# the `url` query param to /download.
+# Public URLs for model weights, built from the community model host.
+# The user can override per-request via the `url` query param to /download.
 _REPO = db_models.MODELS_REPO_RAW
 MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
-    "subject_seg": {"url": f"{_REPO}/u2netp.onnx", "filename": "u2netp.onnx"},
-    "objects": {"url": f"{_REPO}/yolo26n.onnx", "filename": "yolo26n.onnx"},
+    "subject_seg": {"url": f"{_REPO}/u2netp.mlpackage.zip", "filename": "u2netp.mlpackage"},
+    "objects": {"url": f"{_REPO}/yolo26n.mlpackage.zip", "filename": "yolo26n.mlpackage"},
     "scene": {"url": f"{_REPO}/places365.mlpackage.zip", "filename": "places365.mlpackage"},
+    "depth": {"url": f"{_REPO}/depth_anything_v2_small.mlpackage.zip", "filename": "depth_anything_v2_small.mlpackage"},
     # content_type uses Apple Vision (no download); intentionally absent here.
 }
 

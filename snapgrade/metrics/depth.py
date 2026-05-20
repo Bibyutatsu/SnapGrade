@@ -21,6 +21,7 @@ import numpy as np
 
 _SESSION = None
 _LOADED = False
+_IS_COREML = False
 _IN = 518  # multiple of 14, the model's patch size
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -35,8 +36,14 @@ def _model_path() -> Path | None:
     p = os.environ.get("SNAPGRADE_DEPTH_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".snapgrade" / "models" / "depth_anything_v2_small.onnx"
-    return default if default.exists() else None
+    models_dir = Path.home() / ".snapgrade" / "models"
+    for candidate in (
+        models_dir / "depth_anything_v2_small.mlpackage",
+        models_dir / "depth_anything_v2_small.onnx",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def is_available() -> bool:
@@ -44,7 +51,7 @@ def is_available() -> bool:
 
 
 def _load():
-    global _SESSION, _LOADED
+    global _SESSION, _LOADED, _IS_COREML
     if _LOADED:
         return _SESSION
     _LOADED = True
@@ -52,8 +59,14 @@ def _load():
     if not mp:
         return None
     try:
-        import onnxruntime as ort
-        _SESSION = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
+        if mp.is_dir():
+            import coremltools as ct
+            _SESSION = ct.models.MLModel(str(mp))
+            _IS_COREML = True
+        else:
+            import onnxruntime as ort
+            _SESSION = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
+            _IS_COREML = False
     except Exception:
         _SESSION = None
     return _SESSION
@@ -67,6 +80,9 @@ def _depth_map(rgb: np.ndarray) -> np.ndarray | None:
 
     im = cv2.resize(rgb, (_IN, _IN), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255.0
     x = ((im - _MEAN) / _STD).transpose(2, 0, 1)[None].astype(np.float32)
+    if _IS_COREML:
+        out = sess.predict({"pixel_values": x})
+        return np.asarray(list(out.values())[0])[0]  # HxW relative depth, higher = nearer
     out = sess.run(None, {sess.get_inputs()[0].name: x})[0]
     return np.asarray(out)[0]  # HxW relative depth, higher = nearer
 

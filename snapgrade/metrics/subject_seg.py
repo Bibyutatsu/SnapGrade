@@ -18,6 +18,7 @@ from PIL import Image
 
 _SESSION = None
 _LOADED = False
+_IS_COREML = False
 _IN_SIZE = 320
 
 
@@ -25,8 +26,11 @@ def _model_path() -> Path | None:
     p = os.environ.get("SNAPGRADE_U2NETP_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    default = Path.home() / ".snapgrade" / "models" / "u2netp.onnx"
-    return default if default.exists() else None
+    models_dir = Path.home() / ".snapgrade" / "models"
+    for candidate in (models_dir / "u2netp.mlpackage", models_dir / "u2netp.onnx"):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def is_available() -> bool:
@@ -34,7 +38,7 @@ def is_available() -> bool:
 
 
 def _load() -> Any | None:
-    global _SESSION, _LOADED
+    global _SESSION, _LOADED, _IS_COREML
     if _LOADED:
         return _SESSION
     _LOADED = True
@@ -42,8 +46,14 @@ def _load() -> Any | None:
     if not mp:
         return None
     try:
-        import onnxruntime as ort
-        _SESSION = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
+        if mp.is_dir():
+            import coremltools as ct
+            _SESSION = ct.models.MLModel(str(mp))
+            _IS_COREML = True
+        else:
+            import onnxruntime as ort
+            _SESSION = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
+            _IS_COREML = False
     except Exception:
         _SESSION = None
     return _SESSION
@@ -59,8 +69,12 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
         arr = np.asarray(im, dtype=np.float32) / 255.0
         arr = (arr - 0.485) / 0.229  # U²-Net uses a single mean/std
         x = arr.transpose(2, 0, 1)[None, ...].astype(np.float32)
-        out = sess.run(None, {sess.get_inputs()[0].name: x})[0]
-        mask = np.asarray(out).squeeze()
+        if _IS_COREML:
+            out = sess.predict({"input_1": x})
+            mask = np.asarray(list(out.values())[0]).squeeze()
+        else:
+            out = sess.run(None, {sess.get_inputs()[0].name: x})[0]
+            mask = np.asarray(out).squeeze()
         mask = (mask - mask.min()) / max(mask.max() - mask.min(), 1e-6)
         binary = mask > 0.5
         coverage = float(binary.mean())

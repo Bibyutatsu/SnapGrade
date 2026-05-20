@@ -74,8 +74,9 @@ def _model_path() -> Path | None:
     if p and Path(p).exists():
         return Path(p)
     models_dir = Path.home() / ".snapgrade" / "models"
-    # Preference order: current YOLO26 ONNX, then legacy YOLOv8 (CoreML, ONNX).
+    # Preference order: YOLO26 CoreML, YOLO26 ONNX, then legacy YOLOv8.
     for candidate in (
+        models_dir / "yolo26n.mlpackage",
         models_dir / "yolo26n.onnx",
         models_dir / "yolov8n.mlpackage",
         models_dir / "yolov8n.onnx",
@@ -136,41 +137,25 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
         labels = _LABELS or _COCO80
 
         if _IS_COREML:
-            # The CoreML export bakes NMS into the graph (Ultralytics
-            # `export(format="coreml", nms=True)`), so we pass the iou/conf
-            # thresholds as model inputs and skip Python-side NMS entirely —
-            # `coordinates`/`confidence` are already the final, deduped boxes.
+            # YOLO26n CoreML is NMS-free: output is [1,300,6] = xyxy + score + class_id,
+            # same layout as the ONNX path below. No PIL conversion or threshold inputs.
             canvas = np.zeros((_IN_SIZE, _IN_SIZE, 3), dtype=np.float32)
             canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
-            canvas_uint8 = (canvas * 255).astype(np.uint8)
-            pil_canvas = Image.fromarray(canvas_uint8)
-
-            out = model.predict({
-                "image": pil_canvas,
-                "iouThreshold": _IOU_TH,
-                "confidenceThreshold": _CONF_TH
-            })
-            conf = np.asarray(out["confidence"])
-            coords = np.asarray(out["coordinates"])
-
+            x = canvas.transpose(2, 0, 1)[None, ...].astype(np.float32)
+            out = model.predict({"images": x})
+            pred = list(out.values())[0][0]  # [300, 6]
             dets = []
-            for i in range(len(coords)):
-                cx, cy, bw, bh = coords[i]
-                cx, cy, bw, bh = cx * _IN_SIZE, cy * _IN_SIZE, bw * _IN_SIZE, bh * _IN_SIZE
-                x0, y0, x1, y1 = cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
-
-                c_scores = conf[i]
-                class_id = c_scores.argmax()
-                score = c_scores[class_id]
-
+            for x0, y0, x1, y1, score, cls in pred:
+                if score < _CONF_TH:
+                    continue
+                ci = int(cls)
                 dets.append({
-                    "class": labels[int(class_id)] if int(class_id) < len(labels) else str(int(class_id)),
+                    "class": labels[ci] if ci < len(labels) else str(ci),
                     "conf": float(score),
                     "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
                 })
             dets.sort(key=lambda d: -d["conf"])
-            primary = dets[0]["class"] if dets else None
-            return {"detections": dets[:10], "primary": primary}
+            return {"detections": dets[:10], "primary": dets[0]["class"] if dets else None}
 
         else:
             canvas = np.zeros((_IN_SIZE, _IN_SIZE, 3), dtype=np.float32)

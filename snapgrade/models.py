@@ -78,19 +78,22 @@ _REGISTRY = {
         "face_landmarker.task",
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
     ),
+    # CoreML variants (ANE-accelerated on Apple Silicon).
+    "u2netp_coreml": ("u2netp.mlpackage", f"{MODELS_REPO_RAW}/u2netp.mlpackage.zip"),
+    "yolo26n_coreml": ("yolo26n.mlpackage", f"{MODELS_REPO_RAW}/yolo26n.mlpackage.zip"),
+    "depth_coreml": ("depth_anything_v2_small.mlpackage", f"{MODELS_REPO_RAW}/depth_anything_v2_small.mlpackage.zip"),
+    # ONNX fallbacks (kept for back-compat with existing installs).
     "u2netp": ("u2netp.onnx", f"{MODELS_REPO_RAW}/u2netp.onnx"),
-    # YOLO26n (ONNX) supersedes YOLOv8n; legacy entry kept for back-compat.
     "yolo26n": ("yolo26n.onnx", f"{MODELS_REPO_RAW}/yolo26n.onnx"),
     "yolov8n": ("yolov8n.mlpackage", f"{MODELS_REPO_RAW}/yolov8n.mlpackage.zip"),
     "nima": ("nima.mlpackage", f"{MODELS_REPO_RAW}/nima.mlpackage.zip"),
     "places365": ("places365.mlpackage", f"{MODELS_REPO_RAW}/places365.mlpackage.zip"),
     "places365_labels": ("places365_labels.txt", f"{MODELS_REPO_RAW}/places365_labels.txt"),
-    "depth": ("depth_anything_v2_small.onnx", f"{MODELS_REPO_RAW}/depth_anything_v2_small.onnx"),
 }
 
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
-OPTIONAL_MODELS = ("u2netp", "yolo26n", "nima", "places365", "places365_labels", "depth")
+OPTIONAL_MODELS = ("u2netp_coreml", "yolo26n_coreml", "depth_coreml", "nima", "places365", "places365_labels")
 
 
 def is_present(name: str) -> bool:
