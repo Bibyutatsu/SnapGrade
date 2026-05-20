@@ -21,6 +21,34 @@ _LOADED = False
 _LABELS: list[str] | None = None
 _IN_SIZE = 640
 _CONF_TH = 0.35
+_IOU_TH = 0.45
+
+
+def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_th: float = _IOU_TH) -> list[int]:
+    """Standard greedy NMS. Returns indices to keep, sorted by score desc."""
+    if boxes_xyxy.size == 0:
+        return []
+    order = scores.argsort()[::-1].tolist()
+    keep: list[int] = []
+    x0, y0, x1, y1 = boxes_xyxy[:, 0], boxes_xyxy[:, 1], boxes_xyxy[:, 2], boxes_xyxy[:, 3]
+    areas = (x1 - x0).clip(min=0) * (y1 - y0).clip(min=0)
+    while order:
+        i = order.pop(0)
+        keep.append(i)
+        if not order:
+            break
+        rest = np.array(order)
+        ix0 = np.maximum(x0[i], x0[rest])
+        iy0 = np.maximum(y0[i], y0[rest])
+        ix1 = np.minimum(x1[i], x1[rest])
+        iy1 = np.minimum(y1[i], y1[rest])
+        iw = (ix1 - ix0).clip(min=0)
+        ih = (iy1 - iy0).clip(min=0)
+        inter = iw * ih
+        union = areas[i] + areas[rest] - inter + 1e-6
+        iou = inter / union
+        order = rest[iou < iou_th].tolist()
+    return keep
 
 _COCO80 = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
@@ -96,19 +124,27 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
         keep = cls_conf >= _CONF_TH
         boxes, cls_ids, cls_conf = boxes[keep], cls_ids[keep], cls_conf[keep]
         labels = _LABELS or _COCO80
+        if boxes.shape[0] == 0:
+            return {"detections": [], "primary": None}
+        # Convert cxcywh → xyxy in input-image coords first.
+        cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
+        # Per-class NMS so two different classes overlapping each other survive.
+        keep_idx: list[int] = []
+        for c in np.unique(cls_ids):
+            mask = cls_ids == c
+            sub_idx = np.where(mask)[0]
+            kept = _nms(xyxy[sub_idx], cls_conf[sub_idx])
+            keep_idx.extend(sub_idx[k] for k in kept)
+        keep_idx.sort(key=lambda i: -cls_conf[i])
         dets = []
-        for b, ci, cc in zip(boxes[:50], cls_ids[:50], cls_conf[:50]):
-            cx, cy, bw, bh = b.tolist()
-            x0 = int((cx - bw / 2) / scale)
-            y0 = int((cy - bh / 2) / scale)
-            x1 = int((cx + bw / 2) / scale)
-            y1 = int((cy + bh / 2) / scale)
+        for i in keep_idx[:20]:
+            x0, y0, x1, y1 = xyxy[i].tolist()
             dets.append({
-                "class": labels[int(ci)] if int(ci) < len(labels) else str(int(ci)),
-                "conf": float(cc),
-                "bbox": [x0, y0, x1, y1],
+                "class": labels[int(cls_ids[i])] if int(cls_ids[i]) < len(labels) else str(int(cls_ids[i])),
+                "conf": float(cls_conf[i]),
+                "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
             })
-        dets.sort(key=lambda d: d["conf"], reverse=True)
         primary = dets[0]["class"] if dets else None
         return {"detections": dets[:10], "primary": primary}
     except Exception:

@@ -278,10 +278,23 @@ def build_plan(
     return OrganizePlan(entries=tuple(entries), conflicts=conflicts)
 
 
-def apply_plan(plan: OrganizePlan, mode: str = "symlink", dry_run: bool = True) -> int:
+def apply_plan(
+    plan: OrganizePlan,
+    mode: str = "symlink",
+    dry_run: bool = True,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Materialise an organize plan and, when files move on disk, update the DB.
+
+    When `mode == "move"`, the source path in the DB is rewritten to the new
+    target so subsequent thumbnail / preview lookups stay valid without a
+    full re-ingest. Symlink/hardlink/copy leave the source intact, so the DB
+    needs no path changes.
+    """
     if mode not in {"symlink", "hardlink", "move", "copy"}:
         raise ValueError(f"Unknown mode: {mode}")
     written = 0
+    moves: list[tuple[str, str]] = []
     for entry in plan.entries:
         if dry_run:
             written += 1
@@ -298,7 +311,12 @@ def apply_plan(plan: OrganizePlan, mode: str = "symlink", dry_run: bool = True) 
                 shutil.copy2(entry.source, entry.target)
         elif mode == "move":
             shutil.move(str(entry.source), str(entry.target))
+            moves.append((str(entry.source), str(entry.target)))
         elif mode == "copy":
             shutil.copy2(entry.source, entry.target)
         written += 1
+
+    if conn is not None and moves and not dry_run:
+        for src, dst in moves:
+            conn.execute("UPDATE images SET path=? WHERE path=?", (dst, src))
     return written

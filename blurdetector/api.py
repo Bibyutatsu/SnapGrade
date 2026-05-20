@@ -117,16 +117,47 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
     models_run = json.loads(row["models_run"] or "{}")
     model_list = list(models_run.keys())
 
-    # Drop DB rows whose files no longer exist on disk.
+    # Reconcile DB paths with disk:
+    #  (a) if a file with the same content_hash is found under the root at a
+    #      new path, update the row in place (recovers from a prior "move"
+    #      organize that didn't propagate the rename to the DB).
+    #  (b) otherwise drop rows whose path is gone.
     existing = {str(p) for p in pipeline.walk_images(root)}
     catalogued = conn.execute(
-        "SELECT id, path FROM images WHERE library_id=?", (library_id,)
+        "SELECT id, path, content_hash FROM images WHERE library_id=?", (library_id,)
     ).fetchall()
-    to_drop = [int(r["id"]) for r in catalogued if r["path"] not in existing]
-    if to_drop:
-        placeholders = ",".join("?" for _ in to_drop)
-        conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", to_drop)
-        db.cleanup_orphan_bursts(conn)
+    # Build an index of disk files by content_hash (only those rows that are
+    # missing — avoid hashing the whole tree unnecessarily).
+    missing = [r for r in catalogued if r["path"] not in existing]
+    rehoused = 0
+    if missing:
+        catalogued_paths = {r["path"] for r in catalogued}
+        unknown_disk = [p for p in existing if p not in catalogued_paths]
+        if unknown_disk:
+            disk_by_hash: dict[str, str] = {}
+            for p in unknown_disk:
+                try:
+                    disk_by_hash[pipeline._content_hash(Path(p))] = p
+                except Exception:
+                    continue
+            for r in missing:
+                h = r["content_hash"]
+                if h and h in disk_by_hash:
+                    conn.execute("UPDATE images SET path=? WHERE id=?", (disk_by_hash[h], int(r["id"])))
+                    rehoused += 1
+        # Re-evaluate which rows are still missing after rehousing.
+        still_missing = [
+            int(r["id"]) for r in catalogued
+            if r["path"] not in existing
+            and conn.execute("SELECT path FROM images WHERE id=?", (int(r["id"]),)).fetchone()["path"] not in existing
+        ]
+        if still_missing:
+            placeholders = ",".join("?" for _ in still_missing)
+            conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", still_missing)
+            db.cleanup_orphan_bursts(conn)
+        to_drop = still_missing
+    else:
+        to_drop = []
 
     def _run() -> None:
         total = _count_supported_files(root)
@@ -140,7 +171,7 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
             INGEST_STATE["running"] = False
 
     background.add_task(_run)
-    return {"started": True, "removed": len(to_drop), "models": model_list}
+    return {"started": True, "removed": len(to_drop), "rehoused": rehoused, "models": model_list}
 
 
 @app.delete("/api/libraries/{library_id}")
@@ -200,7 +231,7 @@ MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
         "filename": "u2netp.onnx",
     },
     "objects": {
-        "url": "https://huggingface.co/Xenova/yolov8n/resolve/main/onnx/model.onnx",
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx",
         "filename": "yolov8n.onnx",
     },
     "scene": {
@@ -576,7 +607,7 @@ def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
         plan = organize.build_plan(conn, target_root, req.levels, paths)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    written = organize.apply_plan(plan, mode=req.mode, dry_run=not req.apply)
+    written = organize.apply_plan(plan, mode=req.mode, dry_run=not req.apply, conn=conn)
     return {
         "plan_size": len(plan.entries),
         "conflicts": plan.conflicts,

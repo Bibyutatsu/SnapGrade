@@ -145,7 +145,7 @@ def organize_cmd(
         console.print(f"  {entry.source.name} → {entry.target}")
     if len(plan.entries) > 20:
         console.print(f"  … and {len(plan.entries) - 20} more")
-    written = organize.apply_plan(plan, mode=mode, dry_run=not apply)
+    written = organize.apply_plan(plan, mode=mode, dry_run=not apply, conn=conn)
     verb = "Would write" if not apply else f"Wrote ({mode})"
     console.print(f"{verb} [bold]{written}[/] entries.")
 

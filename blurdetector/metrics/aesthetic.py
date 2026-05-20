@@ -29,6 +29,10 @@ def _load() -> object | None:
         return _MODEL
     _LOADED = True
     path = os.environ.get("BLURDETECTOR_NIMA_MODEL")
+    if not path:
+        default = Path.home() / ".blurdetector" / "models" / "nima.mlpackage"
+        if default.exists():
+            path = str(default)
     if not path or not Path(path).exists():
         return None
     try:
@@ -41,10 +45,13 @@ def _load() -> object | None:
 
 
 def _preprocess(rgb: np.ndarray) -> np.ndarray:
+    """Return NCHW float32 array. PyTorch MobileNetV2 (converted via traced
+    `torch.jit.trace`) expects channels-first; passing HWC silently runs the
+    model on transposed pixels and produces garbage scores."""
     im = Image.fromarray(rgb).resize((224, 224), Image.BILINEAR)
     arr = np.asarray(im, dtype=np.float32) / 255.0
     arr = (arr - _MEAN) / _STD
-    return arr
+    return arr.transpose(2, 0, 1).astype(np.float32)
 
 
 def score(rgb: np.ndarray) -> float | None:
@@ -58,6 +65,12 @@ def score(rgb: np.ndarray) -> float | None:
         first = next(iter(out.values()))
         arr = np.asarray(first).ravel()
         if arr.size == 10:
+            # Apply softmax in case the model emits raw logits (the
+            # titu1994/neural-image-assessment Keras checkpoints emit probs,
+            # but PyTorch ports usually leave the head as a Linear layer).
+            if arr.min() < 0 or arr.max() > 1.5:
+                arr = np.exp(arr - arr.max())
+                arr = arr / arr.sum()
             bins = np.arange(1, 11, dtype=np.float32)
             mean = float((arr * bins).sum() / max(arr.sum(), 1e-6))
             return max(0.0, min(1.0, (mean - 1.0) / 9.0))
