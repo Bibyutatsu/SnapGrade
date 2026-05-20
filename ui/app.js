@@ -77,42 +77,70 @@ function useStats(pollMs = 2000) {
   return [stats, refresh];
 }
 
-function Sidebar({ tab, setTab, stats }) {
+function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
   return html`
-    <aside class="gutter">
-      <div class="brand">Blur<em>·</em>Detector</div>
-      <div class="brand-sub">A local culling apparatus</div>
+    <aside class="gutter" style=${{ padding: collapsed ? "20px 0" : "28px 24px 20px", alignItems: collapsed ? "center" : "" }}>
+      <button
+        onClick=${onToggle}
+        title=${collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        style=${{
+          alignSelf: "flex-end",
+          marginBottom: collapsed ? "24px" : "0",
+          marginRight: collapsed ? "0" : "-8px",
+          padding: "4px 8px",
+          fontSize: "14px",
+          color: "var(--mute)",
+          lineHeight: "1",
+          transition: "color .15s",
+        }}
+        onMouseOver=${(e) => e.currentTarget.style.color = "var(--bone)"}
+        onMouseOut=${(e) => e.currentTarget.style.color = "var(--mute)"}
+      >${collapsed ? "»" : "«"}</button>
 
-      <nav class="nav">
+      ${!collapsed && html`
+        <div class="brand">Blur<em>·</em>Detector</div>
+        <div class="brand-sub">A local culling apparatus</div>
+      `}
+
+      <nav class="nav" style=${{ width: "100%" }}>
         ${TABS.map(([k, label, n]) => html`
-          <button key=${k} class=${tab === k ? "on" : ""} onClick=${() => setTab(k)}>
-            <span class="n">${n}.</span><span>${label}</span>
+          <button
+            key=${k}
+            class=${tab === k ? "on" : ""}
+            onClick=${() => setTab(k)}
+            title=${collapsed ? label : ""}
+            style=${{ justifyContent: collapsed ? "center" : "", paddingLeft: collapsed ? "0" : "", borderLeft: collapsed && tab === k ? "2px solid var(--rust)" : "" }}
+          >
+            <span class="n">${n}.</span>
+            ${!collapsed && html`<span>${label}</span>`}
           </button>
         `)}
       </nav>
 
-      <div class="gutter-foot">
-        <div class="row"><span>Libraries</span><span class="num">${pad(stats?.libraries ?? 0, 3)}</span></div>
-        <div class="row"><span>Frames</span><span class="num">${pad(stats?.images, 5)}</span></div>
-        <div class="row"><span>Bursts</span><span class="num">${pad(stats?.bursts, 4)}</span></div>
-        ${stats?.ingest?.running && html`
-          <div class="live">Ingest · ${stats.ingest.folder?.split("/").pop() || ""}</div>
-          ${(() => {
-            const { done, total } = stats.ingest;
-            const pct = total && total > 0 ? Math.min(100, Math.round(100 * done / total)) : null;
-            return html`
-              <div class="progress-track">
-                ${pct == null
-                  ? html`<div class="progress-indeterminate"></div>`
-                  : html`<div class="progress-fill" style=${{ width: pct + "%" }}></div>`}
-              </div>
-              <div class="progress-label">
-                <span>${done}${total ? ` / ${total}` : ""} frames</span>
-                <span>${pct == null ? "scanning" : pct + "%"}</span>
-              </div>`;
-          })()}
-        `}
-      </div>
+      ${!collapsed && html`
+        <div class="gutter-foot">
+          <div class="row"><span>Libraries</span><span class="num">${pad(stats?.libraries ?? 0, 3)}</span></div>
+          <div class="row"><span>Frames</span><span class="num">${pad(stats?.images, 5)}</span></div>
+          <div class="row"><span>Bursts</span><span class="num">${pad(stats?.bursts, 4)}</span></div>
+          ${stats?.ingest?.running && html`
+            <div class="live">Ingest · ${stats.ingest.folder?.split("/").pop() || ""}</div>
+            ${(() => {
+              const { done, total } = stats.ingest;
+              const pct = total && total > 0 ? Math.min(100, Math.round(100 * done / total)) : null;
+              return html`
+                <div class="progress-track">
+                  ${pct == null
+                    ? html`<div class="progress-indeterminate"></div>`
+                    : html`<div class="progress-fill" style=${{ width: pct + "%" }}></div>`}
+                </div>
+                <div class="progress-label">
+                  <span>${done}${total ? ` / ${total}` : ""} frames</span>
+                  <span>${pct == null ? "scanning" : pct + "%"}</span>
+                </div>`;
+            })()}
+          `}
+        </div>
+      `}
     </aside>
   `;
 }
@@ -527,6 +555,8 @@ function DetailPanel({ image, onVerdict, onOpenLightbox }) {
 }
 
 function Lightbox({ image, onClose, onVerdict, onPrev, onNext }) {
+  const [showBboxes, setShowBboxes] = useState(true);
+
   useEffect(() => {
     function key(e) {
       if (e.key === "Escape") onClose();
@@ -543,6 +573,25 @@ function Lightbox({ image, onClose, onVerdict, onPrev, onNext }) {
 
   if (!image) return null;
 
+  const subjects = image.metrics?.subjects || [];
+  const decoded  = image.metrics?.decoded_size;
+
+  function bboxStyle(s) {
+    if (!decoded || !s.bbox) return { display: "none" };
+    const [dw, dh] = decoded;
+    const [x, y, w, h] = s.bbox;
+    return {
+      position: "absolute",
+      left:   (100 * x / dw) + "%",
+      top:    (100 * y / dh) + "%",
+      width:  (100 * w / dw) + "%",
+      height: (100 * h / dh) + "%",
+      border: `2px solid ${s.is_primary ? "var(--rust)" : "var(--mute)"}`,
+      pointerEvents: "none",
+      boxSizing: "border-box",
+    };
+  }
+
   return html`
     <div class="lightbox" onClick=${onClose}>
       <button class="lightbox-close" onClick=${onClose}>✕</button>
@@ -550,7 +599,21 @@ function Lightbox({ image, onClose, onVerdict, onPrev, onNext }) {
       <button class="lightbox-nav next" onClick=${(e) => { e.stopPropagation(); onNext(); }}>›</button>
 
       <div class="lightbox-content" onClick=${(e) => e.stopPropagation()}>
-        <img src=${`/api/images/${image.id}/preview`} onClick=${onClose} />
+        <div style=${{ position: "relative", display: "inline-block", lineHeight: 0 }}>
+          <img src=${`/api/images/${image.id}/preview`} onClick=${onClose} />
+          ${showBboxes && subjects.map((s, i) => html`
+            <div key=${i} style=${bboxStyle(s)}>
+              <span style=${{
+                position: "absolute", top: "-20px", left: "0",
+                fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase",
+                padding: "1px 6px",
+                background: s.is_primary ? "var(--rust)" : "var(--mute)",
+                color: "var(--ink)",
+                whiteSpace: "nowrap",
+              }}>${s.is_primary ? "subj" : s.kind}${s.confidence ? ` ${(s.confidence * 100 | 0)}` : ""}</span>
+            </div>
+          `)}
+        </div>
 
         <div class="lightbox-meta">
           <h4>№ ${pad(image.id, 4)}</h4>
@@ -569,6 +632,14 @@ function Lightbox({ image, onClose, onVerdict, onPrev, onNext }) {
             <button class=${`btn ghost`} style=${image.verdict === "review" ? {borderColor: "var(--amber)", color: "var(--amber)"} : {}} onClick=${() => onVerdict("review")}>Review</button>
             <button class=${`btn ghost ${image.verdict === "reject" ? "danger" : ""}`} onClick=${() => onVerdict("reject")}>Reject</button>
           </div>
+          ${subjects.length > 0 && html`
+            <div style=${{ marginTop: "10px" }}>
+              <label class="micro" style=${{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+                <input type="checkbox" checked=${showBboxes} onChange=${(e) => setShowBboxes(e.target.checked)} />
+                subject bboxes
+              </label>
+            </div>
+          `}
         </div>
       </div>
     </div>
@@ -1001,6 +1072,12 @@ function App() {
     return VALID_TABS.has(saved) ? saved : "library";
   });
   const setTabPersist = useCallback((t) => { setTab(t); localStorage.setItem("bd_tab", t); }, []);
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("bd_sidebar") !== "0");
+  const toggleSidebar = useCallback(() => setSidebarOpen(v => {
+    const next = !v;
+    localStorage.setItem("bd_sidebar", next ? "1" : "0");
+    return next;
+  }), []);
   const [stats, refreshStats] = useStats(2000);
   let pane;
   if (tab === "library")       pane = html`<${LibraryTab} stats=${stats} refreshStats=${refreshStats} />`;
@@ -1008,8 +1085,8 @@ function App() {
   else if (tab === "organize") pane = html`<${OrganizeTab} />`;
   else                         pane = html`<${SettingsTab} />`;
   return html`
-    <div class="shell">
-      <${Sidebar} tab=${tab} setTab=${setTabPersist} stats=${stats} />
+    <div class="shell" style=${{ gridTemplateColumns: sidebarOpen ? "240px 1fr" : "48px 1fr" }}>
+      <${Sidebar} tab=${tab} setTab=${setTabPersist} stats=${stats} collapsed=${!sidebarOpen} onToggle=${toggleSidebar} />
       <main>
         <${TopBar} tab=${tab} frameNo=${stats?.images} />
         ${pane}
