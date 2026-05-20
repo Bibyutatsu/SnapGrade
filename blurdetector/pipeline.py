@@ -60,15 +60,41 @@ def _dc_to_dict(obj: Any) -> Any:
     return obj
 
 
-def analyze_one(path: Path, max_edge: int = 2000) -> AnalysisResult:
+def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = None) -> AnalysisResult:
     img = decode.decode(path, max_edge=max_edge)
     rgb = img.rgb
+    enabled = set(models or [])
 
     # ML phase: YuNet and MediaPipe are not thread-safe — serialize.
     with _ML_LOCK:
         subjects = subject.detect_subjects(rgb)
         eye_report = eyes.measure(rgb, faces=subjects)
         aesthetic_score = aesthetic.score(rgb)
+        extra: dict[str, Any] = {}
+        if "scene" in enabled:
+            try:
+                from .metrics import scene as _scene
+                extra["scene"] = _scene.analyze(rgb)
+            except Exception as e:  # pragma: no cover - opt-in
+                extra["scene_error"] = str(e)
+        if "subject_seg" in enabled:
+            try:
+                from .metrics import subject_seg as _ss
+                extra["subject_seg"] = _ss.analyze(rgb)
+            except Exception as e:  # pragma: no cover
+                extra["subject_seg_error"] = str(e)
+        if "objects" in enabled:
+            try:
+                from .metrics import objects as _obj
+                extra["objects"] = _obj.analyze(rgb)
+            except Exception as e:  # pragma: no cover
+                extra["objects_error"] = str(e)
+        if "screendoc" in enabled:
+            try:
+                from .metrics import screendoc as _sd
+                extra["screendoc"] = _sd.analyze(rgb)
+            except Exception as e:  # pragma: no cover
+                extra["screendoc_error"] = str(e)
 
     bbox = subject.primary_bbox(subjects)
     sharp_global = sharpness.measure(rgb)
@@ -91,13 +117,15 @@ def analyze_one(path: Path, max_edge: int = 2000) -> AnalysisResult:
         "source_size": [img.source_w, img.source_h],
         "kind": img.kind,
     }
+    metrics.update(extra)
     return AnalysisResult(path=path, metrics=metrics, verdict=decide.decide(metrics))
 
 
-def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float) -> None:
+def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
     ex = exif.read_exif(path)
     fields = {
         "path": str(path),
+        **({"library_id": library_id} if library_id is not None else {}),
         "size_bytes": st_size,
         "mtime": st_mtime,
         "content_hash": _content_hash(path),
@@ -145,8 +173,12 @@ def analyze_folder(
     force: bool = False,
     max_edge: int = 2000,
     workers: int | None = None,
+    models: list[str] | None = None,
+    library_id: int | None = None,
 ) -> Iterator[AnalysisResult]:
     conn = db.connect(db_path) if db_path else db.connect()
+    if library_id is None:
+        library_id = db.ensure_library(conn, str(root))
 
     pending: list[tuple[Path, os.stat_result]] = []
     for p in walk_images(root):
@@ -162,20 +194,20 @@ def analyze_folder(
     if n_workers <= 1:
         for p, st in pending:
             try:
-                r = analyze_one(p, max_edge=max_edge)
-                _persist(conn, p, r, st.st_size, st.st_mtime)
+                r = analyze_one(p, max_edge=max_edge, models=models)
+                _persist(conn, p, r, st.st_size, st.st_mtime, library_id=library_id)
                 yield r
             except Exception as e:
                 log.exception("Failed to analyze %s: %s", p, e)
         return
 
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        futures = {pool.submit(analyze_one, p, max_edge): (p, st) for p, st in pending}
+        futures = {pool.submit(analyze_one, p, max_edge, models): (p, st) for p, st in pending}
         for fut in as_completed(futures):
             p, st = futures[fut]
             try:
                 r = fut.result()
-                _persist(conn, p, r, st.st_size, st.st_mtime)
+                _persist(conn, p, r, st.st_size, st.st_mtime, library_id=library_id)
                 yield r
             except Exception as e:
                 log.exception("Failed to analyze %s: %s", p, e)

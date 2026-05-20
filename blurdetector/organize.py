@@ -146,6 +146,30 @@ def _event(rec: Record) -> str:
     return _safe(label) if label else "_unknown"
 
 
+def _scene(rec: Record) -> str:
+    metrics = rec.get("_metrics", {})
+    s = metrics.get("scene") if isinstance(metrics, dict) else None
+    if isinstance(s, dict) and s.get("primary"):
+        return _safe(str(s["primary"]))
+    return "_unknown"
+
+
+def _object_class(rec: Record) -> str:
+    metrics = rec.get("_metrics", {})
+    o = metrics.get("objects") if isinstance(metrics, dict) else None
+    if isinstance(o, dict) and o.get("primary"):
+        return _safe(str(o["primary"]))
+    return "_unknown"
+
+
+def _content_type(rec: Record) -> str:
+    metrics = rec.get("_metrics", {})
+    sd = metrics.get("screendoc") if isinstance(metrics, dict) else None
+    if isinstance(sd, dict) and sd.get("class"):
+        return _safe(str(sd["class"]))
+    return "_unknown"
+
+
 TOKENS: dict[str, Token] = {
     "date:YYYY": _date_token("%Y"),
     "date:YYYY-MM": _date_token("%Y-%m"),
@@ -165,6 +189,9 @@ TOKENS: dict[str, Token] = {
     "gps:country": _gps_country,
     "gps:city": _gps_city,
     "event": _event,
+    "scene": _scene,
+    "object:class": _object_class,
+    "content_type": _content_type,
 }
 
 

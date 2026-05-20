@@ -46,30 +46,144 @@ def health() -> dict[str, str]:
 @app.get("/api/stats")
 def stats() -> dict[str, Any]:
     conn = _conn()
-    total = conn.execute("SELECT COUNT(*) AS c FROM images").fetchone()["c"]
+    total_row = conn.execute("SELECT COUNT(*) AS c FROM images").fetchone()
+    total = total_row["c"] if total_row else 0
     by_verdict = conn.execute(
         "SELECT verdict, COUNT(*) AS c FROM verdicts GROUP BY verdict"
     ).fetchall()
     bursts = conn.execute("SELECT COUNT(*) AS c FROM bursts").fetchone()["c"]
+    libraries_count = int(conn.execute("SELECT COUNT(*) AS c FROM libraries").fetchone()["c"])
+
     return {
         "images": int(total),
+        "folders": libraries_count,
+        "libraries": libraries_count,
         "by_verdict": {r["verdict"]: int(r["c"]) for r in by_verdict},
         "bursts": int(bursts),
         "ingest": INGEST_STATE,
     }
 
 
+@app.post("/api/select_folder")
+def select_folder() -> dict[str, str | None]:
+    """macOS folder picker; AppleScript is forced to the front via System Events."""
+    import subprocess
+    script = (
+        'tell application "System Events" to activate\n'
+        'try\n'
+        '  set chosen to choose folder with prompt "Select photo folder"\n'
+        '  return POSIX path of chosen\n'
+        'on error number -128\n'
+        '  return ""\n'
+        'end try'
+    )
+    try:
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+        path = res.stdout.strip()
+        return {"path": path or None}
+    except subprocess.CalledProcessError:
+        return {"path": None}
+    except FileNotFoundError:
+        raise HTTPException(501, "Folder picker requires macOS (osascript)")
+    except Exception as e:
+        raise HTTPException(500, f"Failed to run dialog: {e}")
+
+
+@app.get("/api/libraries")
+def list_libraries_endpoint() -> dict[str, Any]:
+    conn = _conn()
+    items = db.list_libraries(conn)
+    return {"items": items, "available_models": _available_models()}
+
+
+@app.delete("/api/libraries/{library_id}")
+def remove_library(library_id: int) -> dict[str, Any]:
+    conn = _conn()
+    counts = db.delete_library(conn, library_id)
+    return {"removed": counts}
+
+
+class RunModelsRequest(BaseModel):
+    models: list[str]
+
+
+@app.post("/api/libraries/{library_id}/run_models")
+def run_library_models(library_id: int, req: RunModelsRequest, background: BackgroundTasks) -> dict[str, Any]:
+    conn = _conn()
+    row = conn.execute("SELECT root_path FROM libraries WHERE id=?", (library_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "library not found")
+    if INGEST_STATE["running"]:
+        raise HTTPException(409, "ingest already running")
+    root = Path(row["root_path"])
+    models = [m for m in req.models if m in _AVAILABLE_MODEL_NAMES]
+
+    db.set_library_models(conn, library_id, models_pending=models)
+
+    def _run() -> None:
+        INGEST_STATE.update(running=True, folder=str(root), done=0, total=None, error=None)
+        try:
+            for _ in pipeline.analyze_folder(root, models=models, library_id=library_id, force=True):
+                INGEST_STATE["done"] += 1
+            from datetime import datetime as _dt
+            bg_conn = _conn()
+            now = _dt.utcnow().isoformat()
+            db.set_library_models(
+                bg_conn, library_id,
+                models_run={m: now for m in models},
+                models_pending=[],
+            )
+        except Exception as e:
+            INGEST_STATE["error"] = str(e)
+        finally:
+            INGEST_STATE["running"] = False
+
+    background.add_task(_run)
+    return {"started": True, "models": models}
+
+
+_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
+
+
+def _available_models() -> list[dict[str, Any]]:
+    """Probe each optional model module for availability."""
+    out: list[dict[str, Any]] = []
+    for name in _AVAILABLE_MODEL_NAMES:
+        try:
+            mod = __import__(f"blurdetector.metrics.{name}", fromlist=["is_available"])
+            avail = bool(mod.is_available())
+        except Exception:
+            avail = False
+        out.append({"name": name, "available": avail})
+    return out
+
+
+@app.get("/api/models")
+def list_available_models() -> dict[str, Any]:
+    return {"models": _available_models()}
+
+
+@app.get("/api/folders")
+def list_folders() -> dict[str, Any]:
+    """Back-compat: returns library root paths (formerly derived from image parents)."""
+    conn = _conn()
+    rows = conn.execute("SELECT root_path FROM libraries ORDER BY root_path").fetchall()
+    return {"folders": [r["root_path"] for r in rows]}
+
+
 @app.get("/api/images")
 def list_images(
     verdict: str | None = Query(None),
     burst: int | None = Query(None),
+    folder: str | None = Query(None),
+    library_id: int | None = Query(None),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     conn = _conn()
     sql = (
         "SELECT i.id, i.path, i.capture_time, i.camera_model, i.iso, i.f_number, "
-        "i.width, i.height, i.content_hash, "
+        "i.width, i.height, i.content_hash, i.library_id, "
         "v.verdict, v.stars, v.label, v.reasons, v.user_override, "
         "bm.burst_id, bm.is_best "
         "FROM images i "
@@ -84,6 +198,12 @@ def list_images(
     if burst is not None:
         where.append("bm.burst_id = ?")
         params.append(burst)
+    if library_id is not None:
+        where.append("i.library_id = ?")
+        params.append(library_id)
+    if folder:
+        where.append("i.path LIKE ?")
+        params.append(f"{folder}/%")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY i.capture_time NULLS LAST, i.id LIMIT ? OFFSET ?"
@@ -108,6 +228,7 @@ def list_images(
                 "user_override": bool(r["user_override"]) if r["user_override"] is not None else False,
                 "burst_id": r["burst_id"],
                 "is_best": bool(r["is_best"]) if r["is_best"] is not None else False,
+                "library_id": int(r["library_id"]) if r["library_id"] is not None else None,
             }
             for r in rows
         ]
@@ -186,25 +307,46 @@ def update_verdict(image_id: int, payload: VerdictUpdate) -> dict[str, Any]:
 
 
 @app.post("/api/ingest")
-def ingest(folder: str, background: BackgroundTasks) -> dict[str, Any]:
-    folder_path = Path(folder).expanduser().resolve()
+def ingest(
+    background: BackgroundTasks,
+    folder: str = Query("", description="Folder path to ingest (required, non-empty)"),
+    models: str = Query("", description="Comma-separated model names to run"),
+) -> dict[str, Any]:
+    if not folder or not folder.strip():
+        raise HTTPException(400, "folder required")
+    folder_path = Path(folder.strip()).expanduser().resolve()
     if not folder_path.is_dir():
         raise HTTPException(400, "folder does not exist")
     if INGEST_STATE["running"]:
         raise HTTPException(409, "ingest already running")
+    model_list = [m.strip() for m in models.split(",") if m.strip() in _AVAILABLE_MODEL_NAMES]
+
+    conn = _conn()
+    library_id = db.ensure_library(conn, str(folder_path))
+    if model_list:
+        db.set_library_models(conn, library_id, models_pending=model_list)
 
     def _run() -> None:
         INGEST_STATE.update(running=True, folder=str(folder_path), done=0, total=None, error=None)
         try:
-            for _ in pipeline.analyze_folder(folder_path):
+            for _ in pipeline.analyze_folder(folder_path, models=model_list, library_id=library_id):
                 INGEST_STATE["done"] += 1
+            if model_list:
+                from datetime import datetime as _dt
+                bg_conn = _conn()
+                now = _dt.utcnow().isoformat()
+                db.set_library_models(
+                    bg_conn, library_id,
+                    models_run={m: now for m in model_list},
+                    models_pending=[],
+                )
         except Exception as e:
             INGEST_STATE["error"] = str(e)
         finally:
             INGEST_STATE["running"] = False
 
     background.add_task(_run)
-    return {"started": True, "folder": str(folder_path)}
+    return {"started": True, "folder": str(folder_path), "library_id": library_id, "models": model_list}
 
 
 @app.post("/api/group")
@@ -233,22 +375,52 @@ def tokens() -> dict[str, Any]:
 
 
 class OrganizeRequest(BaseModel):
-    root: str
+    root: str | None = None
     levels: list[str]
     mode: str = "symlink"
     apply: bool = False
     scope: str | None = None
+    library_id: int | None = None
+    in_place: bool = False
+    confirm: str | None = None  # required when in_place=True with apply=True
 
 
 @app.post("/api/organize")
 def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
     conn = _conn()
     paths: list[str] | None = None
-    if req.scope:
-        scope_path = Path(req.scope).expanduser().resolve()
-        paths = [str(p) for p in pipeline.walk_images(scope_path)]
+
+    # Resolve scope. library_id wins over scope string.
+    scope_root: Path | None = None
+    if req.library_id is not None:
+        row = conn.execute("SELECT root_path, display_name FROM libraries WHERE id=?", (req.library_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "library not found")
+        scope_root = Path(row["root_path"]).expanduser().resolve()
+        lib_name = row["display_name"] or scope_root.name
+    elif req.scope:
+        scope_root = Path(req.scope).expanduser().resolve()
+        lib_name = scope_root.name
+    else:
+        lib_name = None
+
+    if scope_root:
+        paths = [str(p) for p in pipeline.walk_images(scope_root)]
+
+    # Resolve destination. In-place mode reorganizes inside scope_root.
+    if req.in_place:
+        if scope_root is None:
+            raise HTTPException(400, "in_place requires a library_id or scope")
+        if req.apply and req.confirm != (lib_name or ""):
+            raise HTTPException(400, "in_place apply requires `confirm` to match the library/folder name")
+        target_root = scope_root
+    else:
+        if not req.root:
+            raise HTTPException(400, "destination root required (or set in_place=true)")
+        target_root = Path(req.root).expanduser().resolve()
+
     try:
-        plan = organize.build_plan(conn, Path(req.root).expanduser().resolve(), req.levels, paths)
+        plan = organize.build_plan(conn, target_root, req.levels, paths)
     except ValueError as e:
         raise HTTPException(400, str(e))
     written = organize.apply_plan(plan, mode=req.mode, dry_run=not req.apply)

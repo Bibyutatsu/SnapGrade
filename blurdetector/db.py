@@ -22,8 +22,18 @@ from typing import Any, Iterator
 DEFAULT_DB = Path.home() / ".blurdetector" / "library.db"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS libraries (
+    id INTEGER PRIMARY KEY,
+    root_path TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    added_at TEXT NOT NULL,
+    models_run TEXT,        -- JSON object: {model_name: iso_timestamp}
+    models_pending TEXT     -- JSON array of model names queued for next analyze
+);
+
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY,
+    library_id INTEGER REFERENCES libraries(id) ON DELETE CASCADE,
     path TEXT NOT NULL UNIQUE,
     size_bytes INTEGER NOT NULL,
     mtime REAL NOT NULL,
@@ -105,7 +115,123 @@ def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate_library_id(conn)
     return conn
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r["name"] == column for r in rows)
+
+
+def _migrate_library_id(conn: sqlite3.Connection) -> None:
+    """Backfill library_id on images for DBs created before the libraries table."""
+    if not _has_column(conn, "images", "library_id"):
+        conn.execute("ALTER TABLE images ADD COLUMN library_id INTEGER REFERENCES libraries(id) ON DELETE CASCADE")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_library_id ON images(library_id)")
+    # Backfill: any image without library_id gets one based on its parent directory.
+    orphans = conn.execute(
+        "SELECT id, path FROM images WHERE library_id IS NULL"
+    ).fetchall()
+    if not orphans:
+        return
+    from datetime import datetime as _dt
+    by_root: dict[str, list[int]] = {}
+    for r in orphans:
+        root = str(Path(r["path"]).parent)
+        by_root.setdefault(root, []).append(int(r["id"]))
+    now = _dt.utcnow().isoformat()
+    for root, ids in by_root.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO libraries(root_path, display_name, added_at) VALUES (?, ?, ?)",
+            (root, Path(root).name or root, now),
+        )
+        lib = conn.execute("SELECT id FROM libraries WHERE root_path=?", (root,)).fetchone()
+        if not lib:
+            continue
+        lib_id = int(lib["id"])
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(
+            f"UPDATE images SET library_id=? WHERE id IN ({placeholders})",
+            [lib_id, *ids],
+        )
+
+
+def ensure_library(conn: sqlite3.Connection, root_path: str, display_name: str | None = None) -> int:
+    from datetime import datetime as _dt
+    row = conn.execute("SELECT id FROM libraries WHERE root_path=?", (root_path,)).fetchone()
+    if row:
+        return int(row["id"])
+    conn.execute(
+        "INSERT INTO libraries(root_path, display_name, added_at, models_run, models_pending) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (root_path, display_name or Path(root_path).name or root_path, _dt.utcnow().isoformat(), "{}", "[]"),
+    )
+    row = conn.execute("SELECT id FROM libraries WHERE root_path=?", (root_path,)).fetchone()
+    return int(row["id"])
+
+
+def list_libraries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT l.id, l.root_path, l.display_name, l.added_at, l.models_run, l.models_pending, "
+        "  (SELECT COUNT(*) FROM images i WHERE i.library_id = l.id) AS image_count "
+        "FROM libraries l ORDER BY l.added_at DESC, l.id DESC"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        lib_id = int(r["id"])
+        verdict_rows = conn.execute(
+            "SELECT v.verdict, COUNT(*) AS c FROM verdicts v "
+            "JOIN images i ON i.id = v.image_id WHERE i.library_id = ? GROUP BY v.verdict",
+            (lib_id,),
+        ).fetchall()
+        by_verdict = {vr["verdict"]: int(vr["c"]) for vr in verdict_rows}
+        out.append(
+            {
+                "id": lib_id,
+                "root_path": r["root_path"],
+                "display_name": r["display_name"],
+                "added_at": r["added_at"],
+                "image_count": int(r["image_count"]),
+                "by_verdict": by_verdict,
+                "models_run": json.loads(r["models_run"]) if r["models_run"] else {},
+                "models_pending": json.loads(r["models_pending"]) if r["models_pending"] else [],
+            }
+        )
+    return out
+
+
+def delete_library(conn: sqlite3.Connection, library_id: int) -> dict[str, int]:
+    counts = {
+        "images": int(conn.execute("SELECT COUNT(*) AS c FROM images WHERE library_id=?", (library_id,)).fetchone()["c"]),
+    }
+    with transaction(conn):
+        conn.execute("DELETE FROM images WHERE library_id=?", (library_id,))
+        conn.execute("DELETE FROM libraries WHERE id=?", (library_id,))
+    return counts
+
+
+def set_library_models(
+    conn: sqlite3.Connection,
+    library_id: int,
+    models_run: dict[str, str] | None = None,
+    models_pending: list[str] | None = None,
+) -> None:
+    row = conn.execute(
+        "SELECT models_run, models_pending FROM libraries WHERE id=?", (library_id,)
+    ).fetchone()
+    if not row:
+        return
+    cur_run = json.loads(row["models_run"]) if row["models_run"] else {}
+    cur_pending = json.loads(row["models_pending"]) if row["models_pending"] else []
+    if models_run is not None:
+        cur_run.update(models_run)
+    if models_pending is not None:
+        cur_pending = list(models_pending)
+    conn.execute(
+        "UPDATE libraries SET models_run=?, models_pending=? WHERE id=?",
+        (json.dumps(cur_run), json.dumps(cur_pending), library_id),
+    )
 
 
 @contextmanager
