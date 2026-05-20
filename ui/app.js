@@ -98,7 +98,7 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
       >${collapsed ? "»" : "«"}</button>
 
       ${!collapsed && html`
-        <div class="brand">Blur<em>·</em>Detector</div>
+        <div class="brand">Snap<em>·</em>Grade</div>
         <div class="brand-sub">A local culling apparatus</div>
       `}
 
