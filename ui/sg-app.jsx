@@ -25,17 +25,20 @@ function App() {
   // the new frames without the user reloading the page.
   useEffect(() => {
     let alive = true;
-    let prevRunning = false;
+    let prevIngest = false, prevFaces = false;
     const tick = async () => {
       const s = await window.SG_API.refreshStats();
       if (!alive || !s) return;
       setStats(s);
-      const running = !!s.ingest?.running;
-      if (prevRunning && !running) {
+      const ingestRunning = !!s.ingest?.running;
+      const facesRunning  = !!s.faces?.running;
+      // true → false transition on either pipeline = refresh SG_DATA + remount screens.
+      if ((prevIngest && !ingestRunning) || (prevFaces && !facesRunning)) {
         await window.SG_API.refresh().catch(() => {});
         if (alive) setDataVersion(v => v + 1);
       }
-      prevRunning = running;
+      prevIngest = ingestRunning;
+      prevFaces  = facesRunning;
     };
     tick();
     const id = setInterval(tick, 2500);

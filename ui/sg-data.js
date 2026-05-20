@@ -195,10 +195,28 @@
       const qs = new URLSearchParams({ hamming, seconds });
       return jpost(`/api/group?${qs.toString()}`);
     },
-    runFaces({ incremental = false } = {}) {
-      const qs = new URLSearchParams({ incremental: incremental ? 'true' : 'false' });
+    runFaces({ incremental = false, threshold } = {}) {
+      const prefs = window.SG_PREFS || {};
+      const t = threshold ?? prefs.faceThreshold ?? 0.30;
+      const qs = new URLSearchParams({ incremental: incremental ? 'true' : 'false', threshold: t });
       return jpost(`/api/faces/run?${qs.toString()}`);
     },
-    loadClusters() { return jget('/api/faces/clusters').then(r => r.items || []); },
+    loadClusters({ minSize } = {}) {
+      const prefs = window.SG_PREFS || {};
+      const m = minSize ?? prefs.faceMinSize ?? 5;
+      return jget(`/api/faces/clusters?min_size=${m}`).then(r => r.items || []);
+    },
+  };
+
+  // ── Persisted UI preferences (face clustering thresholds, etc.) ────────────
+  function loadPrefs() {
+    try { return JSON.parse(localStorage.getItem('sg.prefs') || '{}'); }
+    catch { return {}; }
+  }
+  window.SG_PREFS = { faceMinSize: 5, faceThreshold: 0.30, ...loadPrefs() };
+  window.SG_API.savePrefs = (patch) => {
+    window.SG_PREFS = { ...window.SG_PREFS, ...patch };
+    localStorage.setItem('sg.prefs', JSON.stringify(window.SG_PREFS));
+    return window.SG_PREFS;
   };
 })();

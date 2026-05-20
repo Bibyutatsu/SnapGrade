@@ -297,6 +297,32 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
               ingest error · {stats.ingest.error.slice(0, 80)}
             </div>
           )}
+          {stats.faces?.running && (() => {
+            const f = stats.faces;
+            const done = f.done || 0;
+            const total = f.total || 0;
+            const pct = total > 0 ? Math.min(100, Math.round(100 * done / total)) : null;
+            const stageLabel = f.stage === 'cluster' ? 'Clustering' : 'Detecting faces';
+            return (
+              <div style={{ marginTop: 12 }}>
+                <div className="sg-live"><span className="sg-live-dot" />{stageLabel}</div>
+                <div className="sg-progress-track">
+                  {pct == null
+                    ? <div className="sg-progress-indeterminate" />
+                    : <div className="sg-progress-fill" style={{ width: `${pct}%` }} />}
+                </div>
+                <div className="sg-progress-label">
+                  <span>{done}{total ? ` / ${total}` : ''} frames</span>
+                  <span>{pct != null ? `${pct}%` : '…'}</span>
+                </div>
+              </div>
+            );
+          })()}
+          {stats.faces?.error && (
+            <div style={{ marginTop:8, fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-danger)' }}>
+              faces error · {stats.faces.error.slice(0, 80)}
+            </div>
+          )}
         </div>
       )}
     </aside>
@@ -412,6 +438,68 @@ function bboxStyle(s, decoded) {
     border: `2px solid ${s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)'}`,
     pointerEvents: 'none', boxSizing: 'border-box',
   };
+}
+
+// ImageWithOverlays — renders an <img> via objectFit:contain inside a wrapper,
+// then positions an absolute overlay box that EXACTLY matches the rendered
+// (letterboxed) image rect, so SubjectOverlay / OCR rects scale correctly.
+// Without this, bbox percentages would be relative to the full wrapper, not
+// the visible image, and the boxes would float into the black bars.
+function ImageWithOverlays({ src, fallbackSrc, subjects, decoded, ocr, naturalSize, showBoxes = true, imgStyle = {} }) {
+  const imgRef  = useRef(null);
+  const wrapRef = useRef(null);
+  const [box, setBox] = useState(null);
+
+  const measure = useCallback(() => {
+    const img  = imgRef.current;
+    const wrap = wrapRef.current;
+    if (!img || !wrap || !img.naturalWidth || !img.naturalHeight) return;
+    const r = wrap.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const ar = img.naturalWidth / img.naturalHeight;
+    let w, h;
+    if (r.width / r.height > ar) { h = r.height; w = r.height * ar; }
+    else                          { w = r.width;  h = r.width / ar;  }
+    setBox({ left: (r.width - w) / 2, top: (r.height - h) / 2, width: w, height: h });
+  }, []);
+
+  useEffect(() => {
+    measure();
+    const wrap = wrapRef.current;
+    if (!wrap || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [measure, src]);
+
+  // OCR bboxes are in original-image pixel coordinates; pass the photo's
+  // intrinsic w/h via `naturalSize` so the % math is correct.
+  const [W, H] = naturalSize || [0, 0];
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <img ref={imgRef} src={src} alt="" onLoad={measure}
+           onError={e => { if (fallbackSrc && e.currentTarget.src !== fallbackSrc) e.currentTarget.src = fallbackSrc; }}
+           style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', ...imgStyle }} />
+      {showBoxes && box && (
+        <div style={{ position: 'absolute', left: box.left, top: box.top,
+                      width: box.width, height: box.height, pointerEvents: 'none' }}>
+          {subjects?.length > 0 && <SubjectOverlay subjects={subjects} decoded={decoded} />}
+          {ocr?.length > 0 && W > 0 && H > 0 && ocr.map((r, i) => {
+            const [x0, y0, x1, y1] = r.bbox;
+            return (
+              <div key={`ocr${i}`} style={{
+                position: 'absolute',
+                left:   `${100 * x0 / W}%`, top:    `${100 * y0 / H}%`,
+                width:  `${100 * (x1 - x0) / W}%`, height: `${100 * (y1 - y0) / H}%`,
+                border: '1px solid rgba(212,160,23,0.65)', boxSizing: 'border-box',
+              }} />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SubjectOverlay({ subjects, decoded }) {
@@ -611,42 +699,19 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
       <button className="sg-lb-nav next" onClick={e => { e.stopPropagation(); onNext(); }}>›</button>
 
       <div className="sg-lb-content" onClick={e => e.stopPropagation()}>
-        <div style={{ position: 'relative', display: 'inline-block' }}>
-          <img src={image.preview} alt="" style={{
-            display: 'block',
-            maxWidth: '86vw', maxHeight: '70vh', objectFit: 'contain',
-            boxShadow: '0 30px 80px rgba(0,0,0,0.9)',
-            border: '1px solid var(--c-border)',
-          }} onError={e => {
-            if (e.currentTarget.src !== image.thumb) {
-              console.warn('preview failed, falling back to thumb:', image.id);
-              e.currentTarget.src = image.thumb;
-            }
-          }} />
-          {showBoxes && (
-            <SubjectOverlay subjects={image.metrics?.subjects} decoded={image.metrics?.decoded_size} />
-          )}
-          {/* OCR overlay — light bounding boxes */}
-          {showBoxes && image.ocr?.length > 0 && image.preview && (
-            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-              {image.ocr.map((r, i) => {
-                // bboxes are in orig-image coords; scale to displayed size
-                // We don't know rendered size, so show as % of 6016×4016
-                const W = image.width  || 6016;
-                const H = image.height || 4016;
-                const [x0,y0,x1,y1] = r.bbox;
-                return (
-                  <div key={i} style={{
-                    position: 'absolute',
-                    left:   `${100 * x0 / W}%`, top:    `${100 * y0 / H}%`,
-                    width:  `${100 * (x1-x0) / W}%`, height: `${100 * (y1-y0) / H}%`,
-                    border: '1px solid rgba(212,160,23,0.65)',
-                    boxSizing: 'border-box',
-                  }} />
-                );
-              })}
-            </div>
-          )}
+        {/* Fixed-size viewport (86vw × 78vh). ImageWithOverlays handles
+            objectFit:contain + accurately-positioned bbox / OCR overlays. */}
+        <div style={{ position: 'relative', width: '86vw', height: '78vh' }}>
+          <ImageWithOverlays
+            src={image.preview}
+            fallbackSrc={image.thumb}
+            subjects={image.metrics?.subjects}
+            decoded={image.metrics?.decoded_size}
+            ocr={image.ocr}
+            naturalSize={[image.width || 6016, image.height || 4016]}
+            showBoxes={showBoxes}
+            imgStyle={{ boxShadow: '0 30px 80px rgba(0,0,0,0.9)', border: '1px solid var(--c-border)' }}
+          />
         </div>
         <div className="sg-lb-meta">
           <h4>

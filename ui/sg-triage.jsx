@@ -383,18 +383,30 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
   const fromPct = span ? Math.max(0, Math.min(1, (fromT - minT) / span)) : 0;
   const toPct   = span ? Math.max(0, Math.min(1, (toT   - minT) / span)) : 1;
 
+  // Keep latest bounds in refs so the long-lived drag listeners don't capture
+  // stale fromPct/toPct from an earlier render. Without this, the clamp below
+  // would always use the handle positions from the first drag start.
+  const fromPctRef = useRef(0);
+  const toPctRef   = useRef(1);
+
   useEffect(() => {
     function up() { dragRef.current = null; }
     function move(e) {
       if (!dragRef.current || !ref.current || !span) return;
       const rect = ref.current.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      let pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      // Clamp so handles can't cross each other (leave a 1% gap so they stay
+      // grabbable). This is the fix for "timeline gets extended" — without it,
+      // dragging the from handle past the to handle inverted the selection.
+      const GAP = 0.01;
+      if (dragRef.current === 'from') pct = Math.min(pct, Math.max(0, toPctRef.current - GAP));
+      else                            pct = Math.max(pct, Math.min(1, fromPctRef.current + GAP));
       const ts = minT + pct * span;
       const iso = new Date(ts).toISOString().slice(0, 10);
       if (dragRef.current === 'from') {
-        onChangeRef.current({ from: pct < 0.01 ? '' : iso });
+        onChangeRef.current({ from: pct < 0.005 ? '' : iso });
       } else {
-        onChangeRef.current({ to:   pct > 0.99 ? '' : iso });
+        onChangeRef.current({ to:   pct > 0.995 ? '' : iso });
       }
     }
     window.addEventListener('mousemove', move);
@@ -407,16 +419,25 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
 
   if (dated.length < 2 || !span) return null;
 
+  // Refresh refs after the early-return guard — at this point fromPct/toPct
+  // are well-defined numbers in [0,1].
+  fromPctRef.current = fromPct;
+  toPctRef.current   = toPct;
+
   function onBgMouseDown(e) {
     if (!ref.current) return;
     const rect = ref.current.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    // If the click is inside the selected band, do nothing — let the user
+    // grab a handle explicitly. This avoids "click in the middle, the closer
+    // handle jumps onto your cursor" surprise.
+    if (pct > fromPct + 0.01 && pct < toPct - 0.01) return;
     const handle = Math.abs(pct - fromPct) <= Math.abs(pct - toPct) ? 'from' : 'to';
     dragRef.current = handle;
     const ts = minT + pct * span;
     const iso = new Date(ts).toISOString().slice(0, 10);
-    if (handle === 'from') onChange({ from: pct < 0.01 ? '' : iso });
-    else                    onChange({ to:   pct > 0.99 ? '' : iso });
+    if (handle === 'from') onChange({ from: pct < 0.005 ? '' : iso });
+    else                    onChange({ to:   pct > 0.995 ? '' : iso });
   }
 
   const fmt = ts => new Date(ts).toLocaleDateString('en-GB',
@@ -929,6 +950,7 @@ function GridLayout({ items, selectedId, onSelect, onDoubleClick }) {
 // ── Filmstrip layout ──────────────────────────────────────────────────────────
 function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDoubleClick }) {
   const selected = items.find(i=>i.id===selectedId)||items[0];
+  const [showBoxes, setShowBoxes] = useState(true);
   const stripRef = useRef(null);
   useEffect(()=>{
     if(!stripRef.current||!selectedId) return;
@@ -936,19 +958,38 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
     const btn=strip.querySelector(`[data-id="${selectedId}"]`);
     if(btn) strip.scrollLeft=btn.offsetLeft-strip.offsetWidth/2+btn.offsetWidth/2;
   },[selectedId]);
+  const hasOverlays = !!(selected?.metrics?.subjects?.length > 0 || selected?.ocr?.length > 0);
   return (
     <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0}}>
-      <div style={{flex:1,background:'#000',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden',cursor:'zoom-in',minHeight:0,minWidth:0}}
+      <div style={{flex:1,background:'#000',position:'relative',overflow:'hidden',cursor:'zoom-in',minHeight:0,minWidth:0}}
         onDoubleClick={()=>selected&&onDoubleClick(selected.id)}>
-        {selected?<img key={selected.id} src={selected.preview} alt="" style={{width:'100%',height:'100%',objectFit:'contain',display:'block',transition:'opacity .18s'}}/>
-          :<div style={{color:'var(--c-mute)',fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:24}}>No frame</div>}
-        <button onClick={onPrev} style={{position:'absolute',left:0,top:0,bottom:0,width:64,background:'linear-gradient(to right,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center'}}
+        {selected ? (
+          <ImageWithOverlays
+            key={selected.id}
+            src={selected.preview}
+            fallbackSrc={selected.thumb}
+            subjects={selected.metrics?.subjects}
+            decoded={selected.metrics?.decoded_size}
+            ocr={selected.ocr}
+            naturalSize={[selected.width || 6016, selected.height || 4016]}
+            showBoxes={showBoxes}
+          />
+        ) : (
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--c-mute)',fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:24}}>No frame</div>
+        )}
+        <button onClick={onPrev} style={{position:'absolute',left:0,top:0,bottom:0,width:64,background:'linear-gradient(to right,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}}
           onMouseOver={e=>e.currentTarget.style.color='rgba(255,255,255,0.9)'} onMouseOut={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}>‹</button>
-        <button onClick={onNext} style={{position:'absolute',right:0,top:0,bottom:0,width:64,background:'linear-gradient(to left,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center'}}
+        <button onClick={onNext} style={{position:'absolute',right:0,top:0,bottom:0,width:64,background:'linear-gradient(to left,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}}
           onMouseOver={e=>e.currentTarget.style.color='rgba(255,255,255,0.9)'} onMouseOut={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}>›</button>
-        {selected&&<div style={{position:'absolute',top:12,left:16,background:'rgba(0,0,0,.6)',padding:'3px 10px',fontSize:10,letterSpacing:'0.2em',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',fontFamily:'var(--font-ui)'}}>
+        {selected&&<div style={{position:'absolute',top:12,left:16,background:'rgba(0,0,0,.6)',padding:'3px 10px',fontSize:10,letterSpacing:'0.2em',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',fontFamily:'var(--font-ui)',zIndex:2}}>
           {items.findIndex(i=>i.id===selected.id)+1} / {items.length}</div>}
-        {selected&&<div style={{position:'absolute',top:12,right:80,padding:'3px 10px',fontSize:9,letterSpacing:'0.22em',textTransform:'uppercase',fontFamily:'var(--font-ui)',background:'rgba(0,0,0,0.6)',color:verdictColor(selected.verdict)}}>{selected.verdict||'—'}</div>}
+        {selected&&<div style={{position:'absolute',top:12,right:80,padding:'3px 10px',fontSize:9,letterSpacing:'0.22em',textTransform:'uppercase',fontFamily:'var(--font-ui)',background:'rgba(0,0,0,0.6)',color:verdictColor(selected.verdict),zIndex:2}}>{selected.verdict||'—'}</div>}
+        {hasOverlays && (
+          <label style={{position:'absolute',bottom:12,left:16,display:'inline-flex',alignItems:'center',gap:6,padding:'4px 9px',background:'rgba(0,0,0,0.55)',fontSize:9,letterSpacing:'.18em',textTransform:'uppercase',color:'var(--c-text)',cursor:'pointer',zIndex:2,fontFamily:'var(--font-ui)'}}>
+            <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)} style={{accentColor:'var(--c-accent)'}} />
+            overlays
+          </label>
+        )}
       </div>
       <div ref={stripRef} className="sg-no-scrollbar" style={{display:'flex',gap:3,overflowX:'auto',padding:'6px 8px',background:'var(--c-panel2)',borderTop:'1px solid var(--c-border)',scrollBehavior:'smooth',flexShrink:0}}>
         {items.map(item=>{

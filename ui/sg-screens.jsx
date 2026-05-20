@@ -33,6 +33,7 @@ function LibraryScreen({ stats }) {
   const [folder, setFolder] = useState('');
   const [msg, setMsg]       = useState('');
   const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: false, objects: false });
+  const [postSteps, setPostSteps] = useState({ group: true, faces: false });
 
   async function pickFolder() {
     setMsg('');
@@ -41,6 +42,22 @@ function LibraryScreen({ stats }) {
       if (path) setFolder(path);
     } catch (e) { setMsg(`folder picker failed: ${e.message}`); }
   }
+
+  // Poll /api/stats.ingest until it goes idle, then resolve. Used to chain
+  // /api/group and /api/faces/run after the ingest BackgroundTask finishes.
+  function waitForIngestIdle(timeoutMs = 30 * 60 * 1000) {
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const id = setInterval(async () => {
+        try {
+          const s = await window.SG_API.refreshStats();
+          if (s && !s.ingest?.running) { clearInterval(id); resolve(s); }
+          else if (Date.now() - t0 > timeoutMs) { clearInterval(id); reject(new Error('ingest timeout')); }
+        } catch (e) { /* keep polling */ }
+      }, 2000);
+    });
+  }
+
   async function develop() {
     if (!folder) return;
     setMsg('');
@@ -48,6 +65,20 @@ function LibraryScreen({ stats }) {
       const models = Object.entries(enabled).filter(([, v]) => v).map(([k]) => k);
       const r = await window.SG_API.ingest(folder, models);
       setMsg(`ingest started for ${r.folder} (library #${r.library_id})`);
+      if (postSteps.group || postSteps.faces) {
+        await waitForIngestIdle();
+        if (postSteps.group) {
+          setMsg('ingest done · grouping bursts…');
+          try { await window.SG_API.regroup(); }
+          catch (e) { setMsg(`regroup failed: ${e.message}`); return; }
+        }
+        if (postSteps.faces) {
+          setMsg('grouping done · launching face clustering…');
+          try { await window.SG_API.runFaces(); }
+          catch (e) { setMsg(`face clustering launch failed: ${e.message}`); return; }
+        }
+        setMsg('post-ingest steps started · watch the sidebar for progress');
+      }
     } catch (e) { setMsg(`ingest failed: ${e.message}`); }
   }
   async function syncLib(id) {
@@ -100,6 +131,19 @@ function LibraryScreen({ stats }) {
                 )}
               </label>
             ))}
+          </div>
+          <div className="sg-model-checklist" style={{ marginTop:10 }}>
+            <div className="sg-model-label">After ingest · chained automatically</div>
+            <label style={{ display:'flex', alignItems:'center', gap:10, fontSize:12, color:'var(--c-text)', cursor:'pointer', padding:'3px 0' }}>
+              <input type="checkbox" checked={postSteps.group} onChange={e => setPostSteps(s => ({ ...s, group: e.target.checked }))} style={{ accentColor:'var(--c-accent)' }} />
+              <span>Group bursts</span>
+              <span style={{ fontSize:10, color:'var(--c-mute)' }}>— pHash + time-window grouping (fast)</span>
+            </label>
+            <label style={{ display:'flex', alignItems:'center', gap:10, fontSize:12, color:'var(--c-text)', cursor:'pointer', padding:'3px 0' }}>
+              <input type="checkbox" checked={postSteps.faces} onChange={e => setPostSteps(s => ({ ...s, faces: e.target.checked }))} style={{ accentColor:'var(--c-accent)' }} />
+              <span>Cluster faces</span>
+              <span style={{ fontSize:10, color:'var(--c-mute)' }}>— InsightFace detect + greedy cluster (slow on large libraries)</span>
+            </label>
           </div>
           {msg && <div className="sg-toast">{msg}</div>}
         </div>
@@ -808,6 +852,69 @@ function SettingsScreen() {
         {reclassified && (
           <div className="sg-toast">→ {reclassified} frames reclassified with new thresholds</div>
         )}
+
+        <FaceClusterSettings />
+      </div>
+    </div>
+  );
+}
+
+// ── Face clustering settings card (lives at the bottom of SettingsScreen) ────
+function FaceClusterSettings() {
+  const [minSize, setMinSize]     = useState(window.SG_PREFS.faceMinSize);
+  const [threshold, setThreshold] = useState(window.SG_PREFS.faceThreshold);
+  const [msg, setMsg]             = useState('');
+
+  function save() {
+    window.SG_API.savePrefs({ faceMinSize: minSize, faceThreshold: threshold });
+    setMsg(`saved · min size ${minSize}, threshold ${threshold.toFixed(2)}`);
+    setTimeout(() => setMsg(''), 2500);
+  }
+
+  return (
+    <div className="sg-card">
+      <div className="sg-card-no">iv.</div>
+      <h2 className="sg-card-h2">Face <em>clustering</em>.</h2>
+      <div className="sg-card-sub">Applies the next time you run "Cluster faces"</div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr auto 70px', gap:16, alignItems:'center', padding:'12px 0', borderBottom:'1px dashed var(--c-border)' }}>
+        <div>
+          <div style={{ fontSize:12, color:'var(--c-text)' }}>Minimum cluster size</div>
+          <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
+            Hide clusters with fewer than N member images
+          </div>
+        </div>
+        <input type="range" min={1} max={20} step={1} value={minSize}
+          onChange={e => setMinSize(parseInt(e.target.value, 10))}
+          style={{ width:180, accentColor:'var(--c-accent)' }} />
+        <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22, color:'var(--c-accent)', textAlign:'right' }}>{minSize}</div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr auto 70px', gap:16, alignItems:'center', padding:'12px 0', borderBottom:'1px dashed var(--c-border)' }}>
+        <div>
+          <div style={{ fontSize:12, color:'var(--c-text)' }}>Similarity threshold</div>
+          <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
+            Cosine sim ≥ this → same person · lower = lumpier · default 0.30 (InsightFace buffalo_s)
+          </div>
+        </div>
+        <input type="range" min={0.15} max={0.55} step={0.01} value={threshold}
+          onChange={e => setThreshold(parseFloat(e.target.value))}
+          style={{ width:180, accentColor:'var(--c-accent)' }} />
+        <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22, color:'var(--c-accent)', textAlign:'right' }}>{threshold.toFixed(2)}</div>
+      </div>
+
+      <div style={{ display:'flex', alignItems:'center', gap:14, marginTop:14 }}>
+        <Btn variant="primary" onClick={save}>Save preferences</Btn>
+        {msg && <span className="sg-toast" style={{ marginTop:0 }}>{msg}</span>}
+        <div style={{ flex:1 }} />
+        <Btn variant="ghost" onClick={async () => {
+          setMsg('launching re-clustering…');
+          try {
+            window.SG_API.savePrefs({ faceMinSize: minSize, faceThreshold: threshold });
+            await window.SG_API.runFaces({ threshold });
+            setMsg('re-clustering started — watch the sidebar');
+          } catch (e) { setMsg(`failed: ${e.message}`); }
+        }}>Re-cluster now</Btn>
       </div>
     </div>
   );

@@ -23,7 +23,12 @@ from . import db, decide, group, models as db_models, organize, pipeline, thumb,
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 INGEST_STATE: dict[str, Any] = {"running": False, "folder": None, "done": 0, "total": None, "error": None}
-FACES_STATE: dict[str, Any] = {"running": False, "stage": None, "detected": 0, "clusters": 0, "error": None}
+FACES_STATE: dict[str, Any] = {
+    "running": False, "stage": None,
+    "done": 0, "total": None,
+    "detected": 0, "clusters": 0,
+    "error": None,
+}
 
 app = FastAPI(title="SnapGrade", version="0.1.0")
 
@@ -655,7 +660,11 @@ def get_burst(burst_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/faces/run")
-def faces_run(background: BackgroundTasks, incremental: bool = Query(False)) -> dict[str, Any]:
+def faces_run(
+    background: BackgroundTasks,
+    incremental: bool = Query(False),
+    threshold: float = Query(0.30, ge=0.0, le=1.0),
+) -> dict[str, Any]:
     """Detect faces (InsightFace) and cluster them (greedy/HNSW), in background.
     Status reported via /api/stats.faces."""
     if FACES_STATE["running"]:
@@ -663,12 +672,23 @@ def faces_run(background: BackgroundTasks, incremental: bool = Query(False)) -> 
     from . import face_cluster
 
     def _run() -> None:
-        FACES_STATE.update(running=True, stage="detect", detected=0, clusters=0, error=None)
+        FACES_STATE.update(
+            running=True, stage="detect",
+            done=0, total=None, detected=0, clusters=0, error=None,
+        )
+
+        def _on_progress(done: int, total: int) -> None:
+            FACES_STATE["done"] = done
+            FACES_STATE["total"] = total
+
         try:
             conn = _conn()
-            cfg = face_cluster.FaceClusterConfig()
-            FACES_STATE["detected"] = face_cluster.detect_and_store(conn, cfg)
+            cfg = face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+            FACES_STATE["detected"] = face_cluster.detect_and_store(conn, cfg, progress_cb=_on_progress)
             FACES_STATE["stage"] = "cluster"
+            # Clustering itself is fast and atomic — flip to indeterminate.
+            FACES_STATE["done"] = 0
+            FACES_STATE["total"] = None
             if incremental:
                 res = face_cluster.cluster_incremental(conn, cfg)
                 FACES_STATE["clusters"] = int(res.get("assigned_existing", 0)) + int(res.get("new_clusters", 0))
@@ -685,7 +705,11 @@ def faces_run(background: BackgroundTasks, incremental: bool = Query(False)) -> 
 
 
 @app.get("/api/faces/clusters")
-def faces_clusters(library_id: int | None = Query(None), thumbs_per: int = Query(12, ge=1, le=48)) -> dict[str, Any]:
+def faces_clusters(
+    library_id: int | None = Query(None),
+    thumbs_per: int = Query(12, ge=1, le=48),
+    min_size: int = Query(5, ge=1, le=1000, description="Hide clusters with fewer than N member images"),
+) -> dict[str, Any]:
     """Cluster reps + member-image samples. Powers the Faces tab."""
     conn = _conn()
     # Best (highest-quality) face per cluster — image_id + bbox for crop hints.
@@ -706,7 +730,7 @@ def faces_clusters(library_id: int | None = Query(None), thumbs_per: int = Query
             f"JOIN images i ON i.id = f.image_id WHERE f.cluster_id = ?{scope_sql}",
             params,
         ).fetchone()["c"]
-        if not cnt:
+        if cnt < min_size:
             continue
         rows = conn.execute(
             f"SELECT DISTINCT f.image_id FROM faces f "

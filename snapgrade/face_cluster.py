@@ -21,7 +21,11 @@ _APP = None
 
 @dataclass(frozen=True)
 class FaceClusterConfig:
-    similarity_threshold: float = 0.45   # cosine-similarity cutoff for "same person"
+    # Cosine-similarity cutoff for "same person". Calibrated against InsightFace
+    # `buffalo_s` (mobile) embeddings — typical same-person pairs land in
+    # ~0.30–0.60, different-person noise stays under ~0.20. Larger models
+    # (buffalo_l) can use 0.40+ comfortably.
+    similarity_threshold: float = 0.30
     max_edge: int = 1024
 
 
@@ -82,7 +86,11 @@ def _face_quality(face, rgb: np.ndarray) -> float:
     return float(0.4 * det + 0.3 * size_score + 0.3 * sharp_score)
 
 
-def detect_and_store(conn: sqlite3.Connection, cfg: FaceClusterConfig | None = None) -> int:
+def detect_and_store(
+    conn: sqlite3.Connection,
+    cfg: FaceClusterConfig | None = None,
+    progress_cb=None,
+) -> int:
     cfg = cfg or FaceClusterConfig()
     _ensure_schema(conn)
     app = _app()
@@ -91,23 +99,28 @@ def detect_and_store(conn: sqlite3.Connection, cfg: FaceClusterConfig | None = N
         "LEFT JOIN faces f ON f.image_id = i.id "
         "WHERE f.id IS NULL"
     ).fetchall()
+    total = len(rows)
+    if progress_cb is not None:
+        progress_cb(0, total)
     inserted = 0
-    for r in rows:
+    for i, r in enumerate(rows, start=1):
         try:
             img = decode.decode(Path(r["path"]), max_edge=cfg.max_edge)
             faces = app.get(img.rgb[:, :, ::-1])  # insightface wants BGR
+            with db.transaction(conn):
+                for face in faces:
+                    bbox = [int(x) for x in face.bbox.tolist()]
+                    emb = np.asarray(face.normed_embedding, dtype=np.float32).tobytes()
+                    quality = _face_quality(face, img.rgb)
+                    conn.execute(
+                        "INSERT INTO faces(image_id, bbox, embedding, quality) VALUES(?,?,?,?)",
+                        (int(r["id"]), json.dumps(bbox), emb, quality),
+                    )
+                    inserted += 1
         except Exception:
-            continue
-        with db.transaction(conn):
-            for face in faces:
-                bbox = [int(x) for x in face.bbox.tolist()]
-                emb = np.asarray(face.normed_embedding, dtype=np.float32).tobytes()
-                quality = _face_quality(face, img.rgb)
-                conn.execute(
-                    "INSERT INTO faces(image_id, bbox, embedding, quality) VALUES(?,?,?,?)",
-                    (int(r["id"]), json.dumps(bbox), emb, quality),
-                )
-                inserted += 1
+            pass
+        if progress_cb is not None:
+            progress_cb(i, total)
     return inserted
 
 
