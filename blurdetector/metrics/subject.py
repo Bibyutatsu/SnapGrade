@@ -164,13 +164,25 @@ def primary_subjects(
     h = image_shape[0]
     w = image_shape[1]
     img_area = max(h * w, 1)
+    _ = w  # silence "unused" — kept for future signal-extraction code
 
     # Build a list of "foreground regions" from optional model signals. Any
     # face whose centre falls inside one of these is promoted to primary even
     # if it would otherwise be classified as crowd or too-small.
+    #
+    # A salient region that covers >25% of the image is treated as scene-level
+    # context (e.g. the whole crowd) rather than a single subject, so it's
+    # only used when no face was detected — never to promote crowd faces.
+    SALIENT_TIGHT_RATIO = 0.25
     fg_regions: list[tuple[int, int, int, int]] = []
+    fg_fallback_regions: list[tuple[int, int, int, int]] = []
     if salient_bbox and len(salient_bbox) == 4:
-        fg_regions.append(_person_bbox_to_xyxy(salient_bbox))
+        r = _person_bbox_to_xyxy(salient_bbox)
+        area = max(0, r[2] - r[0]) * max(0, r[3] - r[1])
+        if area / img_area <= SALIENT_TIGHT_RATIO:
+            fg_regions.append(r)
+        else:
+            fg_fallback_regions.append(r)
     if person_bboxes:
         # Use only the largest person bbox; secondary people are background.
         sized = sorted(
@@ -185,9 +197,12 @@ def primary_subjects(
     if not faces:
         # No face detector hit. If a model identified a foreground region,
         # synthesise a Subject from the largest such region so downstream code
-        # still has something to focus on.
-        if fg_regions:
-            r = max(fg_regions, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        # still has something to focus on. Loose salient regions (>40% of the
+        # image) are accepted in this fallback path since something is better
+        # than nothing when no face is found.
+        all_regions = fg_regions + fg_fallback_regions
+        if all_regions:
+            r = max(all_regions, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
             return [Subject(
                 bbox=(r[0], r[1], r[2] - r[0], r[3] - r[1]),
                 kind="person",
