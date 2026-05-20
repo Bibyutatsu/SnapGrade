@@ -106,12 +106,22 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
                 extra["scene"] = _scene.analyze(rgb)
             except Exception as e:  # pragma: no cover - opt-in
                 extra["scene_error"] = str(e)
-        if "screendoc" in enabled:
+        # Content type (screenshot / document / photo) + OCR, both via Apple
+        # Vision — no model download. "screendoc" is a deprecated alias.
+        if enabled & {"content_type", "ocr", "screendoc"}:
             try:
-                from .metrics import screendoc as _sd
-                extra["screendoc"] = _sd.analyze(rgb)
+                from .metrics import vision as _vis
+                ocr_regions = _vis.recognize_text(rgb) if _vis.is_available() else []
+                extra["ocr"] = ocr_regions
+                # Camera-EXIF presence is the strongest screenshot signal —
+                # screenshots have none. Cheap to read; only done when enabled.
+                has_camera = bool(exif.read_exif(path).camera_model)
+                from .metrics import content_type as _ct
+                extra["content_type"] = _ct.analyze(
+                    rgb, ocr_regions=ocr_regions, has_camera=has_camera
+                )
             except Exception as e:  # pragma: no cover
-                extra["screendoc_error"] = str(e)
+                extra["content_type_error"] = str(e)
 
     # Prefer the largest primary subject's bbox for subject-aware sharpness.
     bbox = primaries[0].bbox if primaries else subject.primary_bbox(subjects)

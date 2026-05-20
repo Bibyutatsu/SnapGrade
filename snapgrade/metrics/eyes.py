@@ -1,10 +1,15 @@
-"""Eye openness / blink detection.
+"""Eye openness / blink detection + ARKit blendshape expression.
 
 Strategy: YuNet finds faces at full-scene scale, then we crop each face (with
 padding) and feed the crop to MediaPipe FaceLandmarker — which is what
 landmarkers are designed for (a close-up of one face). The blendshape outputs
 `eyeBlinkLeft` and `eyeBlinkRight` (0=open, 1=fully closed) are the primary
 signal; classical EAR is computed from landmarks as a secondary check.
+
+The same blendshape pass is also the source of truth for facial expression:
+`mouthSmileLeft/Right` drive `smile_score`, `mouthFrownLeft/Right` plus
+`browDownLeft/Right` drive `frown_score`. These feed the burst picker in
+`group.py` so portrait bursts prefer open eyes + smiles.
 """
 
 from __future__ import annotations
@@ -32,6 +37,15 @@ class EyeReport:
     min_ear: float | None
     max_blink: float | None
     any_closed: bool
+    # Per-face expression (parallel to `ears` / `blinks`). Empty when no
+    # blendshapes were produced.
+    smiles: tuple[float, ...] = ()
+    frowns: tuple[float, ...] = ()
+    brows_down: tuple[float, ...] = ()
+    # Whole-frame aggregates — max across faces; None when no faces.
+    max_smile: float | None = None
+    max_frown: float | None = None
+    max_brow_down: float | None = None
 
 
 def _landmarker():
@@ -64,14 +78,26 @@ def _ear(pts: np.ndarray) -> float:
     return float((v1 + v2) / (2.0 * horiz))
 
 
-def _blink_scores(blendshapes) -> tuple[float, float]:
-    left = right = 0.0
+_EXPRESSION_KEYS = (
+    "eyeBlinkLeft", "eyeBlinkRight",
+    "mouthSmileLeft", "mouthSmileRight",
+    "mouthFrownLeft", "mouthFrownRight",
+    "browDownLeft", "browDownRight",
+)
+
+
+def _expression_scores(blendshapes) -> dict[str, float]:
+    """Extract the blendshape coefficients we use for blink / smile / frown."""
+    out = {k: 0.0 for k in _EXPRESSION_KEYS}
     for cat in blendshapes:
-        if cat.category_name == "eyeBlinkLeft":
-            left = float(cat.score)
-        elif cat.category_name == "eyeBlinkRight":
-            right = float(cat.score)
-    return left, right
+        if cat.category_name in out:
+            out[cat.category_name] = float(cat.score)
+    return out
+
+
+def _blink_scores(blendshapes) -> tuple[float, float]:
+    s = _expression_scores(blendshapes)
+    return s["eyeBlinkLeft"], s["eyeBlinkRight"]
 
 
 def _pad_crop(rgb: np.ndarray, bbox: tuple[int, int, int, int], pad: float = 0.4) -> np.ndarray:
@@ -105,6 +131,9 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
     lm = _landmarker()
     ears: list[float] = []
     blinks: list[tuple[float, float]] = []
+    smiles: list[float] = []
+    frowns: list[float] = []
+    brows_down: list[float] = []
     any_closed = False
 
     for face in faces:
@@ -123,10 +152,14 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         ears.append(min(left, right))
 
         if res.face_blendshapes:
-            bl, br = _blink_scores(res.face_blendshapes[0])
+            bs = _expression_scores(res.face_blendshapes[0])
         else:
-            bl = br = 0.0
+            bs = {k: 0.0 for k in _EXPRESSION_KEYS}
+        bl, br = bs["eyeBlinkLeft"], bs["eyeBlinkRight"]
         blinks.append((bl, br))
+        smiles.append(max(bs["mouthSmileLeft"], bs["mouthSmileRight"]))
+        frowns.append(max(bs["mouthFrownLeft"], bs["mouthFrownRight"]))
+        brows_down.append(max(bs["browDownLeft"], bs["browDownRight"]))
 
         if max(bl, br) >= CLOSED_BLEND_THRESHOLD or min(left, right) < CLOSED_EAR_THRESHOLD:
             any_closed = True
@@ -138,4 +171,10 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         min_ear=float(min(ears)) if ears else None,
         max_blink=max((max(b) for b in blinks), default=None) if blinks else None,
         any_closed=any_closed,
+        smiles=tuple(smiles),
+        frowns=tuple(frowns),
+        brows_down=tuple(brows_down),
+        max_smile=float(max(smiles)) if smiles else None,
+        max_frown=float(max(frowns)) if frowns else None,
+        max_brow_down=float(max(brows_down)) if brows_down else None,
     )

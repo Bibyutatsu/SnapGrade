@@ -164,9 +164,12 @@ def _object_class(rec: Record) -> str:
 
 def _content_type(rec: Record) -> str:
     metrics = rec.get("_metrics", {})
-    sd = metrics.get("screendoc") if isinstance(metrics, dict) else None
-    if isinstance(sd, dict) and sd.get("class"):
-        return _safe(str(sd["class"]))
+    # "content_type" is the current key; "screendoc" kept for old DB rows.
+    ct = None
+    if isinstance(metrics, dict):
+        ct = metrics.get("content_type") or metrics.get("screendoc")
+    if isinstance(ct, dict) and ct.get("class"):
+        return _safe(str(ct["class"]))
     return "_unknown"
 
 

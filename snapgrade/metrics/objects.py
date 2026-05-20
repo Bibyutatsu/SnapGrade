@@ -1,8 +1,12 @@
-"""Object detector via YOLOv8n ONNX (~6 MB, COCO classes).
+"""Object detector via YOLO26n ONNX (~10 MB, COCO 80 classes).
 
-Drop the model at ~/.snapgrade/models/yolov8n.onnx (or set
-SNAPGRADE_YOLO_MODEL). Optional labels file at yolov8n_labels.txt;
-defaults to the canonical COCO 80 list when missing.
+Prefers ~/.snapgrade/models/yolo26n.onnx, falling back to the older
+yolov8n.{mlpackage,onnx} so existing installs keep working. Override the path
+with SNAPGRADE_YOLO_MODEL. Optional labels file (yolo26n_labels.txt or
+yolov8n_labels.txt) defaults to the canonical COCO 80 list when missing.
+
+YOLO26 is exported with nms=False, so the raw output keeps YOLOv8's
+[1, 84, 8400] layout and the Python NMS below applies unchanged.
 
 Returns: list of top detections (class, confidence, bbox) + primary class.
 """
@@ -69,13 +73,16 @@ def _model_path() -> Path | None:
     p = os.environ.get("SNAPGRADE_YOLO_MODEL")
     if p and Path(p).exists():
         return Path(p)
-    # Prefer CoreML first
-    default_cml = Path.home() / ".snapgrade" / "models" / "yolov8n.mlpackage"
-    if default_cml.exists():
-        return default_cml
-    # Fallback to ONNX
-    default_onnx = Path.home() / ".snapgrade" / "models" / "yolov8n.onnx"
-    return default_onnx if default_onnx.exists() else None
+    models_dir = Path.home() / ".snapgrade" / "models"
+    # Preference order: current YOLO26 ONNX, then legacy YOLOv8 (CoreML, ONNX).
+    for candidate in (
+        models_dir / "yolo26n.onnx",
+        models_dir / "yolov8n.mlpackage",
+        models_dir / "yolov8n.onnx",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def is_available() -> bool:
@@ -170,8 +177,25 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
             canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
             x = canvas.transpose(2, 0, 1)[None, ...].astype(np.float32)
             out = model.run(None, {model.get_inputs()[0].name: x})[0]
-            # YOLOv8 raw output: [1, 84, 8400]  — 4 box + 80 class scores
             pred = np.asarray(out)[0]
+
+            # YOLO26 NMS-free export emits [N, 6] = xyxy + score + class_id —
+            # already decoded and deduped, so no NMS and no argmax needed.
+            if pred.ndim == 2 and pred.shape[1] == 6:
+                dets = []
+                for x0, y0, x1, y1, score, cls in pred:
+                    if score < _CONF_TH:
+                        continue
+                    ci = int(cls)
+                    dets.append({
+                        "class": labels[ci] if ci < len(labels) else str(ci),
+                        "conf": float(score),
+                        "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
+                    })
+                dets.sort(key=lambda d: -d["conf"])
+                return {"detections": dets[:10], "primary": dets[0]["class"] if dets else None}
+
+            # YOLOv8 raw output: [1, 84, 8400] — 4 box + 80 class scores → NMS.
             if pred.shape[0] < pred.shape[1]:
                 pred = pred.T  # to [N, 84]
             if pred.shape[1] < 5:

@@ -221,7 +221,7 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
     return {"started": True, "models": models}
 
 
-_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
+_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "content_type")
 
 # Public URLs for small model weights, built from the community model host
 # (snapgrade.models.MODELS_REPO_RAW). The user can override per-request via
@@ -229,9 +229,9 @@ _AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "screendoc")
 _REPO = db_models.MODELS_REPO_RAW
 MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
     "subject_seg": {"url": f"{_REPO}/u2netp.onnx", "filename": "u2netp.onnx"},
-    "objects": {"url": f"{_REPO}/yolov8n.mlpackage.zip", "filename": "yolov8n.mlpackage"},
+    "objects": {"url": f"{_REPO}/yolo26n.onnx", "filename": "yolo26n.onnx"},
     "scene": {"url": f"{_REPO}/places365.mlpackage.zip", "filename": "places365.mlpackage"},
-    "screendoc": {"url": f"{_REPO}/screendoc.mlpackage.zip", "filename": "screendoc.mlpackage"},
+    # content_type uses Apple Vision (no download); intentionally absent here.
 }
 
 DOWNLOAD_STATE: dict[str, Any] = {"running": False, "model": None, "downloaded": 0, "total": None, "error": None}

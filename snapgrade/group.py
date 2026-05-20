@@ -15,10 +15,11 @@ from .metrics.phash import hamming
 class BurstConfig:
     hamming_threshold: int = 10          # bits-of-difference cutoff on 64-bit phash
     time_window_seconds: int = 3         # capture-time proximity required
-    w_sharpness: float = 0.50
+    w_sharpness: float = 0.45
     w_eyes: float = 0.20
-    w_exposure: float = 0.15
-    w_aesthetic: float = 0.15
+    w_smile: float = 0.10                # blendshape `mouthSmile` — portrait pick
+    w_exposure: float = 0.12
+    w_aesthetic: float = 0.13
 
 
 @dataclass(frozen=True)
@@ -57,12 +58,24 @@ def _quality_score(metrics: dict, cfg: BurstConfig) -> float:
     sharp = (metrics.get("subject_sharpness") or metrics.get("sharpness") or {}).get("score", 0.0)
     eyes = metrics.get("eyes") or {}
     expo = metrics.get("exposure") or {}
-    eye_score = 0.0 if eyes.get("any_closed") else 1.0
+    # Continuous eyes signal — prefer "more open" frames within a burst even
+    # when no one is fully closed. Hard zero if any face is fully closed.
+    if eyes.get("faces", 0) == 0:
+        eye_score = 1.0  # no face → eye signal can't tilt the pick
+        smile_score = 0.0
+    elif eyes.get("any_closed"):
+        eye_score = 0.0
+        smile_score = float(eyes.get("max_smile") or 0.0)
+    else:
+        max_blink = eyes.get("max_blink")
+        eye_score = 1.0 - float(max_blink) if max_blink is not None else 1.0
+        smile_score = float(eyes.get("max_smile") or 0.0)
     expo_score = 0.0 if (expo.get("overexposed") or expo.get("underexposed")) else 1.0
     aesthetic = metrics.get("aesthetic_score", 0.5) or 0.5
     return (
         cfg.w_sharpness * sharp
         + cfg.w_eyes * eye_score
+        + cfg.w_smile * smile_score
         + cfg.w_exposure * expo_score
         + cfg.w_aesthetic * aesthetic
     )

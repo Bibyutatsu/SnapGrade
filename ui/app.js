@@ -38,8 +38,8 @@ const TAB_LEDE = {
 const MODEL_INFO = {
   scene:       { label: "Scene classifier",    note: "Places365 — adds {scene} token" },
   subject_seg: { label: "Salient subject seg", note: "U²-Netp — better subject mask" },
-  objects:     { label: "Object detector",     note: "YOLOv8n — COCO classes" },
-  screendoc:   { label: "Screenshot / doc",    note: "Auto-rejects screenshots / receipts" },
+  objects:     { label: "Object detector",     note: "YOLO26n — COCO classes" },
+  content_type:{ label: "Screenshot / doc",    note: "Apple Vision — flags screenshots & documents" },
 };
 
 function pad(n, w = 3) { return String(n ?? 0).padStart(w, "0"); }

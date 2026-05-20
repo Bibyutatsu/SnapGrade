@@ -12,6 +12,7 @@ import numpy as np
 class Composition:
     horizon_tilt_deg: float | None   # signed; None if no dominant horizontal line
     thirds_offset: float | None      # 0=on a thirds intersection, 1=far away; None if no subject
+    horizon_source: str | None = None  # "vision" | "hough" | None — for debugging
 
 
 def horizon_tilt(rgb: np.ndarray) -> float | None:
@@ -66,7 +67,24 @@ def thirds_offset(rgb_shape: tuple[int, int], bbox: tuple[int, int, int, int] | 
 
 
 def measure(rgb: np.ndarray, primary_bbox: tuple[int, int, int, int] | None) -> Composition:
+    # Apple Vision's horizon detector is more robust than Hough lines (handles
+    # textured / lineless scenes); fall back to Hough when it's unavailable or
+    # finds nothing.
+    tilt: float | None = None
+    source: str | None = None
+    try:
+        from . import vision
+        if vision.is_available():
+            tilt = vision.horizon_angle(rgb)
+            if tilt is not None:
+                source = "vision"
+    except Exception:
+        tilt = None
+    if tilt is None:
+        tilt = horizon_tilt(rgb)
+        source = "hough" if tilt is not None else None
     return Composition(
-        horizon_tilt_deg=horizon_tilt(rgb),
+        horizon_tilt_deg=tilt,
         thirds_offset=thirds_offset(rgb.shape, primary_bbox),
+        horizon_source=source,
     )

@@ -41,7 +41,7 @@ def analyze(
     force: bool = typer.Option(False, "--force", help="Re-analyze even if cached"),
     max_edge: int = typer.Option(2000, "--max-edge", help="Long-edge size for analysis"),
     workers: int = typer.Option(0, "--workers", help="Thread count (0 = auto)"),
-    models: str = typer.Option("", "--models", help="Comma-separated optional models: scene,screendoc,objects,subject_seg"),
+    models: str = typer.Option("", "--models", help="Comma-separated optional models: scene,content_type,objects,subject_seg"),
 ) -> None:
     """Recursively analyze a folder of images."""
     model_list = [m.strip() for m in models.split(",") if m.strip()] or None
@@ -207,7 +207,8 @@ def setup_cmd(
     """Download the optional model weights from the community model host.
 
     YuNet + FaceLandmarker are fetched automatically on first analyze, so this
-    only pulls the opt-in models (U²-Netp, YOLOv8n, NIMA, Places365, screendoc).
+    only pulls the opt-in models (U²-Netp, YOLO26n, NIMA, Places365). Content-type
+    classification uses Apple Vision and needs no download.
     Run once on a fresh machine; weights land in ~/.snapgrade/models/.
     """
     wanted = [m.strip() for m in only.split(",") if m.strip()] or list(models.OPTIONAL_MODELS)
