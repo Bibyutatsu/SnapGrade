@@ -173,6 +173,20 @@ def _content_type(rec: Record) -> str:
     return "_unknown"
 
 
+def _palette_temperature(rec: Record) -> str:
+    c = rec.get("_metrics", {}).get("color") if isinstance(rec.get("_metrics"), dict) else None
+    if isinstance(c, dict) and c.get("temperature"):
+        return _safe(str(c["temperature"]))
+    return "_unknown"
+
+
+def _palette_saturation(rec: Record) -> str:
+    c = rec.get("_metrics", {}).get("color") if isinstance(rec.get("_metrics"), dict) else None
+    if isinstance(c, dict) and c.get("saturation"):
+        return _safe(str(c["saturation"]))
+    return "_unknown"
+
+
 TOKENS: dict[str, Token] = {
     "date:YYYY": _date_token("%Y"),
     "date:YYYY-MM": _date_token("%Y-%m"),
@@ -195,6 +209,8 @@ TOKENS: dict[str, Token] = {
     "scene": _scene,
     "object:class": _object_class,
     "content_type": _content_type,
+    "palette:temperature": _palette_temperature,
+    "palette:saturation": _palette_saturation,
 }
 
 
@@ -281,6 +297,22 @@ def build_plan(
     return OrganizePlan(entries=tuple(entries), conflicts=conflicts)
 
 
+def _ensure_ops_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS organize_ops (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_organize_ops_run ON organize_ops(run_id)")
+
+
 def apply_plan(
     plan: OrganizePlan,
     mode: str = "symlink",
@@ -293,11 +325,15 @@ def apply_plan(
     target so subsequent thumbnail / preview lookups stay valid without a
     full re-ingest. Symlink/hardlink/copy leave the source intact, so the DB
     needs no path changes.
+
+    Every materialised op is recorded in `organize_ops` (when `conn` is given)
+    so `undo_last` can reverse the run.
     """
     if mode not in {"symlink", "hardlink", "move", "copy"}:
         raise ValueError(f"Unknown mode: {mode}")
     written = 0
     moves: list[tuple[str, str]] = []
+    ops: list[tuple[str, str]] = []  # (source, target) actually written
     for entry in plan.entries:
         if dry_run:
             written += 1
@@ -317,9 +353,63 @@ def apply_plan(
             moves.append((str(entry.source), str(entry.target)))
         elif mode == "copy":
             shutil.copy2(entry.source, entry.target)
+        ops.append((str(entry.source), str(entry.target)))
         written += 1
 
-    if conn is not None and moves and not dry_run:
-        for src, dst in moves:
-            conn.execute("UPDATE images SET path=? WHERE path=?", (dst, src))
+    if conn is not None and not dry_run:
+        if moves:
+            for src, dst in moves:
+                conn.execute("UPDATE images SET path=? WHERE path=?", (dst, src))
+        if ops:
+            _ensure_ops_schema(conn)
+            run_id = datetime.utcnow().isoformat()
+            for src, dst in ops:
+                conn.execute(
+                    "INSERT INTO organize_ops(run_id, mode, source, target, created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (run_id, mode, src, dst, run_id),
+                )
+            conn.commit()
     return written
+
+
+def undo_last(conn: sqlite3.Connection) -> dict[str, int]:
+    """Reverse the most recent organize run. Returns counts of what was undone.
+
+    symlink/hardlink/copy → the target is removed. move → the file is moved
+    back and the DB path restored. Anything already changed by hand on disk is
+    skipped, not forced.
+    """
+    _ensure_ops_schema(conn)
+    last = conn.execute("SELECT run_id FROM organize_ops ORDER BY id DESC LIMIT 1").fetchone()
+    if not last:
+        return {"undone": 0, "skipped": 0}
+    run_id = last["run_id"]
+    rows = conn.execute(
+        "SELECT id, mode, source, target FROM organize_ops WHERE run_id=? ORDER BY id DESC",
+        (run_id,),
+    ).fetchall()
+    undone = skipped = 0
+    for r in rows:
+        target = Path(r["target"])
+        source = Path(r["source"])
+        try:
+            if r["mode"] == "move":
+                if target.exists() and not source.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(target), str(source))
+                    conn.execute("UPDATE images SET path=? WHERE path=?", (str(source), str(target)))
+                    undone += 1
+                else:
+                    skipped += 1
+            else:  # symlink / hardlink / copy — just remove the materialised target
+                if target.is_symlink() or target.exists():
+                    target.unlink()
+                    undone += 1
+                else:
+                    skipped += 1
+        except OSError:
+            skipped += 1
+    conn.execute("DELETE FROM organize_ops WHERE run_id=?", (run_id,))
+    conn.commit()
+    return {"undone": undone, "skipped": skipped}

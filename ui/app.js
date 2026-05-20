@@ -433,11 +433,15 @@ function LibraryTab({ stats, refreshStats }) {
   `;
 }
 
+const CT_BADGE = { screenshot: "🖥", document: "📄" };
+
 function Thumb({ item, idx, onClick, onDoubleClick, selected }) {
   const cls = ["thumb", item.verdict || "", selected ? "sel" : ""].filter(Boolean).join(" ");
+  const ctBadge = CT_BADGE[item.content_type];
   return html`
     <button class=${cls} style=${{ animationDelay: `${Math.min(idx, 24) * 18}ms` }} onClick=${onClick} onDoubleClick=${onDoubleClick}>
       ${item.is_best && html`<span class="best">Best</span>`}
+      ${ctBadge && html`<span class="best" style=${{ left: "auto", right: "6px", background: item.content_type === "document" ? "var(--rust)" : "var(--amber)" }} title=${item.content_type}>${ctBadge}</span>`}
       <img loading="lazy" src=${`/api/images/${item.id}/thumb?size=320`} />
       <div class="strip">
         <span class="no">№ ${pad(item.id, 4)}</span>
@@ -445,6 +449,57 @@ function Thumb({ item, idx, onClick, onDoubleClick, selected }) {
       </div>
     </button>
   `;
+}
+
+// Renders the semantic tags extracted by the analysis layer: content type,
+// scene, detected objects/animals, and OCR text. Hidden entirely when none
+// are present (e.g. content_type model not run on this image).
+function MetricTags({ metrics }) {
+  if (!metrics) return null;
+  const ct = metrics.content_type;
+  const scene = metrics.scene;
+  const objects = metrics.objects;
+  const animals = metrics.animals || [];
+  const ocr = metrics.ocr || [];
+
+  const CT_STYLE = {
+    screenshot: { bg: "var(--amber)", label: "🖥 screenshot" },
+    document:   { bg: "var(--rust)",  label: "📄 document" },
+    photo:      { bg: "var(--moss)",  label: "🖼 photo" },
+  };
+
+  // Distinct object classes, most-confident first.
+  const objClasses = [];
+  for (const d of (objects?.detections || [])) {
+    if (!objClasses.includes(d.class)) objClasses.push(d.class);
+  }
+  const animalSpecies = [...new Set(animals.map((a) => a.species))];
+
+  const hasAny = ct || scene?.primary || objClasses.length || animalSpecies.length || ocr.length;
+  if (!hasAny) return null;
+
+  const chip = (txt, bg) => html`<span class="chip" style=${{
+    background: bg ? bg : "var(--panel)", color: bg ? "var(--ink)" : "var(--fg)",
+    border: bg ? "none" : "1px solid var(--hair)", textTransform: "none", letterSpacing: "0.02em",
+  }}>${txt}</span>`;
+
+  const ocrText = ocr.map((r) => r.text).join(" ");
+
+  return html`
+    <div class="tags-panel" style=${{ marginTop: "14px" }}>
+      <div class="micro" style=${{ marginBottom: "8px" }}>Tags</div>
+      <div style=${{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+        ${ct && ct.class && chip((CT_STYLE[ct.class]?.label || ct.class) + (ct.conf ? ` ${(ct.conf*100|0)}%` : ""), CT_STYLE[ct.class]?.bg)}
+        ${scene?.primary && chip("⛰ " + scene.primary)}
+        ${objClasses.slice(0, 8).map((c) => chip(c))}
+        ${animalSpecies.map((s) => chip("🐾 " + s))}
+      </div>
+      ${ocr.length > 0 && html`
+        <details style=${{ marginTop: "10px" }}>
+          <summary>OCR text · ${ocr.length} ${ocr.length === 1 ? "region" : "regions"}</summary>
+          <div class="micro" style=${{ marginTop: "6px", lineHeight: "1.5", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>${ocrText}</div>
+        </details>`}
+    </div>`;
 }
 
 function DetailPanel({ image, onVerdict, onOpenLightbox }) {
@@ -543,6 +598,8 @@ function DetailPanel({ image, onVerdict, onOpenLightbox }) {
 
         ${(image.reasons || []).length > 0 && html`
           <div class="reasons">${image.reasons.join(" · ")}</div>`}
+
+        ${html`<${MetricTags} metrics=${image.metrics} />`}
 
         ${image.metrics && html`
           <details>
@@ -648,6 +705,7 @@ function Lightbox({ image, onClose, onVerdict, onPrev, onNext }) {
 
 function TriageTab() {
   const [filter, setFilter] = useState("all");
+  const [ctFilter, setCtFilter] = useState("all");
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -674,12 +732,13 @@ function TriageTab() {
   const reload = useCallback(async () => {
     const qs = new URLSearchParams();
     if (filter !== "all") qs.set("verdict", filter);
+    if (ctFilter !== "all") qs.set("content_type", ctFilter);
     if (activeLib !== null) qs.set("library_id", activeLib);
     if (selectedBurst) qs.set("burst", selectedBurst);
     const q = qs.toString();
     const r = await api(`/api/images${q ? "?" + q : ""}`);
     setItems(r.items);
-  }, [filter, activeLib, selectedBurst]);
+  }, [filter, ctFilter, activeLib, selectedBurst]);
 
   useEffect(() => { reload(); }, [reload]);
   useEffect(() => { loadLibraries(); loadBursts(); }, [loadLibraries, loadBursts]);
@@ -796,6 +855,11 @@ function TriageTab() {
             <button key=${f} class=${`chip ${filter === f ? "on" : ""}`} onClick=${() => setFilter(f)}>${f}</button>
           `)}
 
+          <span style=${{ width: "1px", background: "var(--hair)", alignSelf: "stretch", margin: "0 2px" }}></span>
+          ${[["all","all"],["photo","photo"],["screenshot","screenshots"],["document","docs"]].map(([v,lbl]) => html`
+            <button key=${v} class=${`chip ${ctFilter === v ? "on" : ""}`} onClick=${() => { setCtFilter(v); setSelectedId(null); }}>${lbl}</button>
+          `)}
+
           <select class="select" style=${{ width: "auto", padding: "6px 12px", fontSize: "11px", height: "auto" }}
                   value=${selectedBurst} onChange=${(e) => { setSelectedBurst(e.target.value); setSelectedId(null); }}>
             <option value="">All Bursts</option>
@@ -832,6 +896,53 @@ function TriageTab() {
       `}
     </div>
   `;
+}
+
+// Build a nested {dirs, files} tree from the flat source→target preview, using
+// each target's path *below the common root* so the projected hierarchy is
+// visible before anything is written.
+function buildTree(entries) {
+  if (!entries || !entries.length) return null;
+  const targets = entries.map((e) => e.target.split("/"));
+  // Common prefix across all targets = the destination root; trim it.
+  let common = 0;
+  const first = targets[0];
+  while (first[common] && targets.every((t) => t[common] === first[common])) common++;
+  const rootLabel = first.slice(0, common).join("/") || "/";
+  const tree = { dirs: {}, files: [] };
+  for (const parts of targets) {
+    const rel = parts.slice(common);
+    let node = tree;
+    for (let i = 0; i < rel.length - 1; i++) {
+      node.dirs[rel[i]] = node.dirs[rel[i]] || { dirs: {}, files: [] };
+      node = node.dirs[rel[i]];
+    }
+    node.files.push(rel[rel.length - 1]);
+  }
+  return { rootLabel, tree };
+}
+
+function TreeNode({ name, node, depth }) {
+  const dirNames = Object.keys(node.dirs).sort();
+  return html`
+    <div style=${{ marginLeft: depth ? "14px" : "0" }}>
+      ${name && html`<div style=${{ color: "var(--rust)" }}>📁 ${name}<span class="micro" style=${{ marginLeft: "6px", color: "var(--mute)" }}>${node.files.length ? node.files.length + " files" : ""}</span></div>`}
+      ${dirNames.map((d) => html`<${TreeNode} key=${d} name=${d} node=${node.dirs[d]} depth=${depth + 1} />`)}
+      ${name && node.files.slice(0, 6).map((f, i) => html`<div key=${i} class="micro" style=${{ marginLeft: "14px", color: "var(--mute)" }}>${f}</div>`)}
+      ${name && node.files.length > 6 && html`<div class="micro" style=${{ marginLeft: "14px", color: "var(--mute)" }}>… +${node.files.length - 6} more</div>`}
+    </div>`;
+}
+
+function OrganizeTree({ entries }) {
+  const built = buildTree(entries);
+  if (!built) return null;
+  const top = Object.keys(built.tree.dirs).sort();
+  return html`
+    <div class="organize-tree" style=${{ fontSize: "11px", lineHeight: "1.6", maxHeight: "340px", overflowY: "auto", padding: "10px 4px" }}>
+      <div style=${{ color: "var(--mute)", marginBottom: "6px" }}>📂 ${built.rootLabel}</div>
+      ${top.map((d) => html`<${TreeNode} key=${d} name=${d} node=${built.tree.dirs[d]} depth=${1} />`)}
+      ${built.tree.files.length > 0 && built.tree.files.slice(0, 6).map((f, i) => html`<div key=${i} class="micro" style=${{ marginLeft: "14px", color: "var(--mute)" }}>${f}</div>`)}
+    </div>`;
 }
 
 function OrganizeTab() {
@@ -976,7 +1087,7 @@ function OrganizeTab() {
                 <span><b>${pad(preview.conflicts, 3)}</b> conflicts</span>
                 <span><b>${pad(preview.written, 4)}</b> ${preview.applied ? "applied" : "would write"}</span>
               </div>
-              <pre>${preview.preview.map((p) => html`<span>${p.source}\n  <span class="arrow">→</span> ${p.target}\n\n</span>`)}</pre>
+              ${html`<${OrganizeTree} entries=${preview.preview} />`}
             </div>`}
         </div>
       </section>

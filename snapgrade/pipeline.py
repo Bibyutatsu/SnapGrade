@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import db, decide, decode, exif
-from .metrics import aesthetic, composition, exposure, eyes, noise, phash, sharpness, subject
+from .metrics import aesthetic, color, composition, exposure, eyes, noise, phash, sharpness, subject
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,18 @@ def _dc_to_dict(obj: Any) -> Any:
     return obj
 
 
+_LIVE_VIDEO_EXTS = (".mov", ".MOV", ".mp4", ".MP4")
+
+
+def _live_photo_video(path: Path) -> Path | None:
+    """A sibling video with the same stem marks an iOS/Android Live Photo."""
+    for ext in _LIVE_VIDEO_EXTS:
+        cand = path.with_suffix(ext)
+        if cand != path and cand.exists():
+            return cand
+    return None
+
+
 def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = None) -> AnalysisResult:
     img = decode.decode(path, max_edge=max_edge)
     rgb = img.rgb
@@ -83,6 +95,12 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
                 extra["objects"] = _obj.analyze(rgb)
             except Exception as e:  # pragma: no cover
                 extra["objects_error"] = str(e)
+        if "depth" in enabled:
+            try:
+                from .metrics import depth as _depth
+                extra["depth"] = _depth.analyze(rgb)
+            except Exception as e:  # pragma: no cover
+                extra["depth_error"] = str(e)
 
         salient_bbox = None
         if isinstance(extra.get("subject_seg"), dict):
@@ -106,20 +124,30 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
                 extra["scene"] = _scene.analyze(rgb)
             except Exception as e:  # pragma: no cover - opt-in
                 extra["scene_error"] = str(e)
-        # Content type (screenshot / document / photo) + OCR, both via Apple
-        # Vision — no model download. "screendoc" is a deprecated alias.
-        if enabled & {"content_type", "ocr", "screendoc"}:
+        # Content type (screenshot / document / photo) + OCR + animals, all via
+        # Apple Vision — no model download. Runs by default when Vision is
+        # available because culling screenshots/docs is a core feature; opt out
+        # with the "no_content_type" pseudo-model. "screendoc"/"ocr" are aliases.
+        from .metrics import vision as _vis
+        want_content = (
+            "no_content_type" not in enabled
+            and (_vis.is_available() or enabled & {"content_type", "ocr", "screendoc"})
+        )
+        if want_content:
             try:
-                from .metrics import vision as _vis
                 ocr_regions = _vis.recognize_text(rgb) if _vis.is_available() else []
                 extra["ocr"] = ocr_regions
                 # Camera-EXIF presence is the strongest screenshot signal —
-                # screenshots have none. Cheap to read; only done when enabled.
+                # screenshots have none.
                 has_camera = bool(exif.read_exif(path).camera_model)
                 from .metrics import content_type as _ct
                 extra["content_type"] = _ct.analyze(
                     rgb, ocr_regions=ocr_regions, has_camera=has_camera
                 )
+                if _vis.is_available():
+                    animals = _vis.recognize_animals(rgb)
+                    if animals:
+                        extra["animals"] = animals
             except Exception as e:  # pragma: no cover
                 extra["content_type_error"] = str(e)
 
@@ -130,6 +158,7 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
     expo = exposure.measure(rgb)
     sigma = noise.estimate_sigma(rgb)
     comp = composition.measure(rgb, bbox)
+    color_info = color.measure(rgb)
     hashes = phash.compute(rgb)
     primary_set = {id(s) for s in primaries}
     seen_ids = set()
@@ -156,11 +185,15 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
         "noise_sigma": sigma,
         "aesthetic_score": aesthetic_score,
         "composition": _dc_to_dict(comp),
+        "color": _dc_to_dict(color_info),
         "hashes": _dc_to_dict(hashes),
         "source_size": [img.source_w, img.source_h],
         "decoded_size": [int(rgb.shape[1]), int(rgb.shape[0])],
         "kind": img.kind,
     }
+    live_video = _live_photo_video(path)
+    if live_video is not None:
+        metrics["live_photo"] = {"video": str(live_video)}
     metrics.update(extra)
     return AnalysisResult(path=path, metrics=metrics, verdict=decide.decide(metrics))
 

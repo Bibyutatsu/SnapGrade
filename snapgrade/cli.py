@@ -127,9 +127,9 @@ def tokens_cmd() -> None:
 
 @app.command("organize")
 def organize_cmd(
-    root: Path = typer.Argument(..., help="Destination root for the organized tree"),
+    root: Path = typer.Argument(None, help="Destination root for the organized tree"),
     levels: list[str] = typer.Option(
-        ...,
+        None,
         "--level",
         "-l",
         help="Organize token per level (repeat). Use `snapgrade tokens` to list.",
@@ -138,9 +138,17 @@ def organize_cmd(
     mode: str = typer.Option("symlink", "--mode", help="symlink | hardlink | copy | move"),
     apply: bool = typer.Option(False, "--apply", help="Actually perform the operation (default is dry-run)"),
     scope: Path = typer.Option(None, "--scope", help="Restrict to images under this folder"),
+    undo: bool = typer.Option(False, "--undo", help="Reverse the most recent organize run"),
 ) -> None:
-    """Build (and optionally apply) a hierarchical organizer plan."""
+    """Build (and optionally apply) a hierarchical organizer plan, or undo the last run."""
     conn = db.connect(db_path) if db_path else db.connect()
+    if undo:
+        result = organize.undo_last(conn)
+        console.print(f"Undo: reversed [bold]{result['undone']}[/] ops, skipped {result['skipped']}.")
+        return
+    if root is None or not levels:
+        console.print("[red]organize requires a root and at least one --level (or use --undo).[/]")
+        raise typer.Exit(1)
     paths = [str(p) for p in pipeline.walk_images(scope)] if scope else None
     plan = organize.build_plan(conn, root, levels, paths)
     console.print(f"[bold]Plan:[/] {plan.summary()}")
@@ -168,10 +176,14 @@ def events_cmd(
 def faces_cmd(
     detect: bool = typer.Option(True, "--detect/--no-detect"),
     cluster: bool = typer.Option(True, "--cluster/--no-cluster"),
+    incremental: bool = typer.Option(
+        False, "--incremental",
+        help="Attach only new faces to existing clusters (no full rebuild)",
+    ),
     threshold: float = typer.Option(0.45, "--threshold"),
     db_path: Path = typer.Option(None, "--db"),
 ) -> None:
-    """Detect faces (InsightFace) and greedy-cluster them across the library."""
+    """Detect faces (InsightFace) and cluster them across the library (HNSW)."""
     from . import face_cluster
 
     conn = db.connect(db_path) if db_path else db.connect()
@@ -180,8 +192,15 @@ def faces_cmd(
         n = face_cluster.detect_and_store(conn, cfg)
         console.print(f"Detected and stored [bold]{n}[/] new face embeddings.")
     if cluster:
-        k = face_cluster.cluster(conn, cfg)
-        console.print(f"Formed [bold]{k}[/] face clusters.")
+        if incremental:
+            res = face_cluster.cluster_incremental(conn, cfg)
+            console.print(
+                f"Incremental: [bold]{res['assigned_existing']}[/] joined existing, "
+                f"[bold]{res['new_clusters']}[/] new clusters."
+            )
+        else:
+            k = face_cluster.cluster(conn, cfg)
+            console.print(f"Formed [bold]{k}[/] face clusters.")
 
 
 @app.command("report")

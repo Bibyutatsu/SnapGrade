@@ -113,12 +113,25 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     ss = subject_sharp or sharp
     lap_val = ss.get("laplacian_var", 0.0)
     aniso = ss.get("fft_anisotropy", 0.0)
+    blur_angle = ss.get("blur_angle_deg")
     soft_face = face_subject and subject_sharp is not None and lap_val < 50.0
-    blur_kind = "motion blur" if aniso > 0.45 else "out of focus"
+    if aniso > 0.45:
+        blur_kind = f"motion blur (~{blur_angle:.0f}°)" if blur_angle is not None else "motion blur"
+    else:
+        blur_kind = "out of focus"
+
+    # Depth-aware focus miss: foreground subject soft while the background is
+    # sharp. This is invisible to a plain sharpness score (the frame *has* sharp
+    # edges, just on the wrong plane), so surface it as its own reject reason.
+    depth = metrics.get("depth") or {}
+    focus_on_background = bool(depth.get("focus_on_background"))
 
     if sharp_score < t.sharp_reject or (soft_face and sharp_score < t.sharp_keeper):
         verdict = "reject"
         reasons.append(blur_kind)
+    elif focus_on_background:
+        verdict = "reject"
+        reasons.append("subject out of focus (background sharp)")
     elif sharp_score < t.sharp_keeper:
         verdict = "review"
         reasons.append("slightly soft")
@@ -139,6 +152,11 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     tilt = comp.get("horizon_tilt_deg")
     if tilt is not None and abs(tilt) > t.horizon_warn_deg:
         reasons.append(f"horizon tilt {tilt:+.1f}°")
+
+    # Strong white-balance cast — informational, never auto-rejects.
+    color = metrics.get("color") or {}
+    if color.get("cast_hue") and color.get("cast_strength", 0.0) > 0.25:
+        reasons.append(f"{color['cast_hue']} colour cast")
 
     # Bin the continuous score into 1..5 stars (regardless of verdict).
     if score >= 0.80:

@@ -85,11 +85,12 @@ _REGISTRY = {
     "nima": ("nima.mlpackage", f"{MODELS_REPO_RAW}/nima.mlpackage.zip"),
     "places365": ("places365.mlpackage", f"{MODELS_REPO_RAW}/places365.mlpackage.zip"),
     "places365_labels": ("places365_labels.txt", f"{MODELS_REPO_RAW}/places365_labels.txt"),
+    "depth": ("depth_anything_v2_small.onnx", f"{MODELS_REPO_RAW}/depth_anything_v2_small.onnx"),
 }
 
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
-OPTIONAL_MODELS = ("u2netp", "yolo26n", "nima", "places365", "places365_labels")
+OPTIONAL_MODELS = ("u2netp", "yolo26n", "nima", "places365", "places365_labels", "depth")
 
 
 def is_present(name: str) -> bool:

@@ -119,6 +119,16 @@ def _ocr_has_text(m: dict[str, Any], _v: Any) -> tuple[bool, str]:
     return len(regions) >= 1, f"ocr_regions={len(regions)}"
 
 
+def _depth_flags_misfocus(m: dict[str, Any], _v: Any) -> tuple[bool, str]:
+    d = m.get("depth") or {}
+    if not d:
+        return False, "depth model not run (download with: snapgrade setup --only depth)"
+    return bool(d.get("focus_on_background")), (
+        f"focus_on_background={d.get('focus_on_background')} "
+        f"near={d.get('near_sharpness'):.0f} far={d.get('far_sharpness'):.0f}"
+    )
+
+
 # ---------- Bucket plan ----------
 # Each bucket lists the checks. Pre-Phase-3, OCR / content_type / depth checks
 # don't exist yet — we soft-mark those as "future" so the baseline run isn't
@@ -136,9 +146,8 @@ BUCKET_PLAN: dict[str, list[Check]] = {
         Check("face count >= 4", _faces_at_least(4)),
     ],
     "Subject out of focus": [
-        # Phase-4 will add depth-aware detection; for now we check that
-        # subject-aware sharpness picks up the focus miss.
-        Check("subject sharpness < frame sharpness", _subject_less_sharp_than_frame(0.30)),
+        # Depth-aware mis-focus: soft foreground in front of a sharp background.
+        Check("depth flags background focus", _depth_flags_misfocus),
     ],
     "Screenshots": [
         Check("classified as screenshot", _content_type_is("screenshot")),
@@ -157,6 +166,7 @@ BUCKET_PLAN: dict[str, list[Check]] = {
 BUCKET_MODELS: dict[str, list[str]] = {
     "Screenshots": ["content_type"],
     "Scenery with text": ["content_type"],
+    "Subject out of focus": ["depth"],
 }
 
 
@@ -262,10 +272,9 @@ def print_table(results: list[BucketResult]) -> None:
 # ---------- pytest entry points ----------
 
 # Buckets the current pipeline is known to miss; tightening tracked by phase.
-# When a phase lands, drop the bucket from this set.
-XFAIL_BUCKETS: dict[str, str] = {
-    "Subject out of focus": "fixed by Phase 4.3 (DepthAnything-V2-Small)",
-}
+# When a phase lands, drop the bucket from this set. (Empty: all buckets are
+# expected to pass when their required models are present.)
+XFAIL_BUCKETS: dict[str, str] = {}
 
 
 @pytest.mark.parametrize("bucket", list(BUCKET_PLAN.keys()))

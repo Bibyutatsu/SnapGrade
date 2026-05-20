@@ -32,6 +32,11 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+macos = [
+    "pyobjc-framework-Vision>=10.0",
+    "pyobjc-framework-Quartz>=10.0",
+]
+faces-hnsw = ["hnswlib>=0.8"]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [project.scripts]

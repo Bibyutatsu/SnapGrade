@@ -23,6 +23,7 @@ class Sharpness:
     tenengrad: float
     fft_anisotropy: float  # 0 = isotropic blur (defocus), 1 = strongly directional (motion)
     score: float           # combined 0..1 sharpness (higher = sharper)
+    blur_angle_deg: float | None = None  # dominant motion direction (only meaningful when anisotropic)
 
 
 def _to_gray(rgb: np.ndarray) -> np.ndarray:
@@ -59,16 +60,21 @@ def tenengrad(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None) ->
     return float(np.mean(gx * gx + gy * gy))
 
 
-def fft_anisotropy(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None) -> float:
+def fft_anisotropy(
+    rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None, return_angle: bool = False
+):
     """Ratio of directional vs isotropic high-frequency energy.
 
     For a defocused blur the high-frequency falloff is roughly isotropic (low
     anisotropy). For camera shake / motion blur, energy is suppressed along
     one direction, producing high anisotropy. Range 0..1.
+
+    With `return_angle=True`, also returns the dominant motion-blur direction
+    in degrees (the streak is perpendicular to the peak-energy frequency axis).
     """
     gray = _crop(_to_gray(rgb), bbox).astype(np.float32)
     if gray.size == 0 or min(gray.shape) < 32:
-        return 0.0
+        return (0.0, None) if return_angle else 0.0
     gray = gray - gray.mean()
     # Hann window to reduce edge artifacts
     h, w = gray.shape
@@ -84,18 +90,25 @@ def fft_anisotropy(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = Non
     outer = min(h, w) // 2
     mask = (r > inner) & (r < outer)
     if not np.any(mask):
-        return 0.0
+        return (0.0, None) if return_angle else 0.0
+    bin_edges = np.linspace(0, 180, 19)  # 10° bins
     angles = (np.degrees(np.arctan2(dy, dx)) % 180.0)
-    bins = np.linspace(0, 180, 19)  # 10° bins
-    idx = np.digitize(angles[mask], bins) - 1
-    energies = np.bincount(idx, weights=mag[mask], minlength=len(bins) - 1)
+    idx = np.digitize(angles[mask], bin_edges) - 1
+    energies = np.bincount(idx, weights=mag[mask], minlength=len(bin_edges) - 1)
     if energies.sum() == 0:
-        return 0.0
+        return (0.0, None) if return_angle else 0.0
     energies = energies / energies.sum()
     # Anisotropy = max bin energy relative to mean (normalized to 0..1).
     peak = energies.max()
     mean = energies.mean()
-    return float(min(1.0, max(0.0, (peak - mean) / (peak + 1e-6))))
+    aniso = float(min(1.0, max(0.0, (peak - mean) / (peak + 1e-6))))
+    if not return_angle:
+        return aniso
+    # Peak frequency-energy axis; the motion streak is perpendicular to it.
+    peak_bin = int(energies.argmax())
+    freq_angle = 0.5 * (bin_edges[peak_bin] + bin_edges[peak_bin + 1])
+    motion_angle = (freq_angle + 90.0) % 180.0
+    return aniso, float(motion_angle)
 
 
 def _squash(x: float, k: float) -> float:
@@ -106,7 +119,7 @@ def _squash(x: float, k: float) -> float:
 def measure(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None) -> Sharpness:
     lap = laplacian_variance(rgb, bbox)
     ten = tenengrad(rgb, bbox)
-    aniso = fft_anisotropy(rgb, bbox)
+    aniso, angle = fft_anisotropy(rgb, bbox, return_angle=True)
     # Knee values calibrated for ~2000px-long-edge analysis images. The user
     # can re-tune via the settings UI; these are sensible defaults.
     score = 0.5 * _squash(lap, 150.0) + 0.5 * _squash(ten, 600.0)
@@ -115,4 +128,5 @@ def measure(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None) -> S
         tenengrad=ten,
         fft_anisotropy=aniso,
         score=score,
+        blur_angle_deg=angle if aniso > 0.45 else None,
     )

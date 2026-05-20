@@ -366,17 +366,23 @@ def list_images(
     burst: int | None = Query(None),
     folder: str | None = Query(None),
     library_id: int | None = Query(None),
+    content_type: str | None = Query(None, description="photo | screenshot | document"),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     conn = _conn()
+    # content_type / scene live in the metrics JSON blob — pull the class out
+    # with json_extract so the UI can tag and filter without a second request.
     sql = (
         "SELECT i.id, i.path, i.capture_time, i.camera_model, i.iso, i.f_number, "
         "i.width, i.height, i.content_hash, i.library_id, "
         "v.verdict, v.stars, v.label, v.reasons, v.user_override, "
-        "bm.burst_id, bm.is_best "
+        "bm.burst_id, bm.is_best, "
+        "json_extract(m.json, '$.content_type.class') AS content_type, "
+        "json_extract(m.json, '$.scene.primary') AS scene "
         "FROM images i "
         "LEFT JOIN verdicts v ON v.image_id = i.id "
+        "LEFT JOIN metrics m ON m.image_id = i.id "
         "LEFT JOIN burst_members bm ON bm.image_id = i.id"
     )
     where: list[str] = []
@@ -393,6 +399,9 @@ def list_images(
     if folder:
         where.append("i.path LIKE ?")
         params.append(f"{folder}/%")
+    if content_type:
+        where.append("json_extract(m.json, '$.content_type.class') = ?")
+        params.append(content_type)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY i.capture_time NULLS LAST, i.id LIMIT ? OFFSET ?"
@@ -418,6 +427,8 @@ def list_images(
                 "burst_id": r["burst_id"],
                 "is_best": bool(r["is_best"]) if r["is_best"] is not None else False,
                 "library_id": int(r["library_id"]) if r["library_id"] is not None else None,
+                "content_type": r["content_type"],
+                "scene": r["scene"],
             }
             for r in rows
         ]
