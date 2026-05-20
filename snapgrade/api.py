@@ -38,6 +38,14 @@ def _conn() -> sqlite3.Connection:
     return db.connect()
 
 
+def _fmt_exposure(t: float | None) -> str | None:
+    if t is None:
+        return None
+    if t >= 1.0:
+        return f"{t:g}s"
+    return f"1/{int(round(1.0 / t))}"
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -374,12 +382,17 @@ def list_images(
     # content_type / scene live in the metrics JSON blob — pull the class out
     # with json_extract so the UI can tag and filter without a second request.
     sql = (
-        "SELECT i.id, i.path, i.capture_time, i.camera_model, i.iso, i.f_number, "
-        "i.width, i.height, i.content_hash, i.library_id, "
+        "SELECT i.id, i.path, i.capture_time, i.camera_model, i.lens_model, "
+        "i.iso, i.f_number, i.exposure_time, i.width, i.height, i.content_hash, i.library_id, "
         "v.verdict, v.stars, v.label, v.reasons, v.user_override, "
         "bm.burst_id, bm.is_best, "
         "json_extract(m.json, '$.content_type.class') AS content_type, "
-        "json_extract(m.json, '$.scene.primary') AS scene "
+        "json_extract(m.json, '$.scene.primary') AS scene, "
+        "json_extract(m.json, '$.sharpness.score') AS sharpness, "
+        "json_extract(m.json, '$.aesthetic_score') AS aesthetic_score, "
+        "json_extract(m.json, '$.color') AS color_json, "
+        "json_extract(m.json, '$.ocr') AS ocr_json, "
+        "json_extract(m.json, '$.animals') AS animals_json "
         "FROM images i "
         "LEFT JOIN verdicts v ON v.image_id = i.id "
         "LEFT JOIN metrics m ON m.image_id = i.id "
@@ -429,6 +442,13 @@ def list_images(
                 "library_id": int(r["library_id"]) if r["library_id"] is not None else None,
                 "content_type": r["content_type"],
                 "scene": r["scene"],
+                "sharpness": float(r["sharpness"]) if r["sharpness"] is not None else 0.0,
+                "aesthetic_score": float(r["aesthetic_score"]) if r["aesthetic_score"] is not None else None,
+                "color": json.loads(r["color_json"]) if r["color_json"] else None,
+                "ocr": json.loads(r["ocr_json"]) if r["ocr_json"] else [],
+                "animals": json.loads(r["animals_json"]) if r["animals_json"] else [],
+                "exposure_time": _fmt_exposure(r["exposure_time"]),
+                "lens": r["lens_model"],
             }
             for r in rows
         ]
@@ -624,6 +644,12 @@ def list_bursts(library_id: int | None = Query(None)) -> dict[str, Any]:
             (library_id,),
         ).fetchall()
     return {"items": [{"burst_id": int(r["burst_id"]), "count": int(r["n"])} for r in rows]}
+
+
+@app.get("/api/bursts/{burst_id}")
+def get_burst(burst_id: int) -> dict[str, Any]:
+    """All images in a burst, in the same shape as /api/images items."""
+    return list_images(burst=burst_id, limit=200)
 
 
 @app.get("/api/tokens")
