@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import db, decide, decode, exif
-from .metrics import aesthetic, color, composition, exposure, eyes, noise, phash, sharpness, subject
+from .metrics import aesthetic, color, composition, exposure, face_expression, noise, phash, sharpness, subject
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
             person_bboxes=person_bboxes or None,
         )
 
-        eye_report = eyes.measure(rgb, faces=primaries)
+        eye_report = face_expression.measure(rgb, faces=primaries)
         aesthetic_score = aesthetic.score(rgb)
         if "scene" in enabled:
             try:
@@ -198,7 +198,10 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
     return AnalysisResult(path=path, metrics=metrics, verdict=decide.decide(metrics))
 
 
-def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
+def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
+    """Persist a single analysis result. Caller MUST hold an open transaction —
+    batched writes amortize per-row commit cost on big-library runs.
+    """
     ex = exif.read_exif(path)
     fields = {
         "path": str(path),
@@ -224,17 +227,25 @@ def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: f
         "dhash": result.metrics["hashes"]["dhash"],
         "analyzed_at": datetime.utcnow().isoformat(),
     }
+    image_id = db.upsert_image(conn, fields)
+    db.save_metrics(conn, image_id, result.metrics)
+    db.save_verdict(
+        conn,
+        image_id,
+        result.verdict.verdict,
+        result.verdict.stars,
+        result.verdict.label,
+        result.verdict.reasons,
+    )
+
+
+def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
+    """Single-row persist with its own transaction (back-compat path)."""
     with db.transaction(conn):
-        image_id = db.upsert_image(conn, fields)
-        db.save_metrics(conn, image_id, result.metrics)
-        db.save_verdict(
-            conn,
-            image_id,
-            result.verdict.verdict,
-            result.verdict.stars,
-            result.verdict.label,
-            result.verdict.reasons,
-        )
+        _persist_row(conn, path, result, st_size, st_mtime, library_id=library_id)
+
+
+PERSIST_BATCH = 50  # rows flushed per outer transaction in analyze_folder
 
 
 def _default_workers() -> int:
@@ -268,14 +279,29 @@ def analyze_folder(
 
     n_workers = workers if workers is not None else _default_workers()
 
+    # Batched writer: keep a running transaction open across PERSIST_BATCH rows,
+    # then commit. Cuts BEGIN/COMMIT overhead from ~1/image to ~1/50 images.
+    buf: list[tuple[Path, AnalysisResult, int, float]] = []
+
+    def _flush() -> None:
+        if not buf:
+            return
+        with db.transaction(conn):
+            for bp, br, bsz, bmt in buf:
+                _persist_row(conn, bp, br, bsz, bmt, library_id=library_id)
+        buf.clear()
+
     if n_workers <= 1:
         for p, st in pending:
             try:
                 r = analyze_one(p, max_edge=max_edge, models=models)
-                _persist(conn, p, r, st.st_size, st.st_mtime, library_id=library_id)
+                buf.append((p, r, st.st_size, st.st_mtime))
+                if len(buf) >= PERSIST_BATCH:
+                    _flush()
                 yield r
             except Exception as e:
                 log.exception("Failed to analyze %s: %s", p, e)
+        _flush()
         return
 
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
@@ -284,10 +310,13 @@ def analyze_folder(
             p, st = futures[fut]
             try:
                 r = fut.result()
-                _persist(conn, p, r, st.st_size, st.st_mtime, library_id=library_id)
+                buf.append((p, r, st.st_size, st.st_mtime))
+                if len(buf) >= PERSIST_BATCH:
+                    _flush()
                 yield r
             except Exception as e:
                 log.exception("Failed to analyze %s: %s", p, e)
+    _flush()
 
 
 def analyze_folder_collect(root: Path, **kwargs: Any) -> list[AnalysisResult]:

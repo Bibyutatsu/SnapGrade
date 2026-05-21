@@ -153,6 +153,43 @@ def recognize_animals(rgb: np.ndarray) -> list[dict[str, Any]]:
         return []
 
 
+def attention_saliency(rgb: np.ndarray) -> dict[str, Any] | None:
+    """Attention-based saliency. Returns {bbox, confidence} for the strongest
+    salient region (Vision returns up to ~3, we take the highest-confidence
+    one), or None if unavailable / no salient region found.
+
+    Vision's attention saliency is ANE-accelerated and qualitatively much
+    sharper than OpenCV's StaticSaliencyFineGrained — callers should prefer
+    this when available and fall back to cv2 only on non-macOS.
+    """
+    if not is_available():
+        return None
+    try:
+        import Vision
+
+        h, w = rgb.shape[:2]
+        handler = _handler(rgb)
+        if handler is None:
+            return None
+        req = Vision.VNGenerateAttentionBasedSaliencyImageRequest.alloc().init()
+        if not _perform(handler, req):
+            return None
+        results = req.results() or []
+        if not results:
+            return None
+        obs = results[0]
+        objs = obs.salientObjects() or []
+        if not objs:
+            return None
+        best = max(objs, key=lambda o: float(o.confidence()))
+        return {
+            "bbox": _norm_box_to_px(best.boundingBox(), w, h),
+            "confidence": float(best.confidence()),
+        }
+    except Exception:
+        return None
+
+
 def horizon_angle(rgb: np.ndarray) -> float | None:
     """Detected horizon tilt in degrees (+ = clockwise), or None."""
     if not is_available():

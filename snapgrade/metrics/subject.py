@@ -82,7 +82,28 @@ def detect_faces(rgb: np.ndarray, score_threshold: float = 0.7) -> list[Subject]
 
 
 def detect_saliency(rgb: np.ndarray) -> Subject | None:
-    """Fallback when no face is found — find the dominant salient region."""
+    """Fallback when no face is found — find the dominant salient region.
+
+    Prefers Apple Vision's attention-based saliency (ANE-accelerated, much
+    sharper bbox); falls back to OpenCV StaticSaliencyFineGrained on
+    non-macOS or when the Vision request fails.
+    """
+    try:
+        from . import vision as _vision
+        if _vision.is_available():
+            res = _vision.attention_saliency(rgb)
+            if res is not None:
+                x0, y0, x1, y1 = res["bbox"]
+                w_box, h_box = max(0, x1 - x0), max(0, y1 - y0)
+                if w_box > 0 and h_box > 0:
+                    return Subject(
+                        bbox=(int(x0), int(y0), int(w_box), int(h_box)),
+                        kind="saliency",
+                        confidence=float(res["confidence"]),
+                    )
+    except Exception:
+        pass
+
     try:
         sal = cv2.saliency.StaticSaliencyFineGrained_create()
     except AttributeError:

@@ -40,9 +40,9 @@ def _load() -> object | None:
     if not path or not Path(path).exists():
         return None
     try:
-        import coremltools as ct
+        from .. import models as _m
 
-        _MODEL = ct.models.MLModel(path)
+        _MODEL = _m.load_coreml(path)
     except Exception:
         _MODEL = None
     return _MODEL

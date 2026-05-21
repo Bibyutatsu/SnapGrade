@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 MODELS_DIR = Path(os.environ.get("SNAPGRADE_MODELS_DIR", Path.home() / ".snapgrade" / "models"))
 
@@ -74,6 +75,10 @@ _REGISTRY = {
         "face_detection_yunet_2023mar.onnx",
         "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     ),
+    # CoreML YuNet is downloaded but inference still runs through OpenCV's
+    # cv2.FaceDetectorYN (ONNX) — switching the runtime needs a Python
+    # implementation of YuNet's 12-head anchor decode + NMS, tracked separately.
+    "yunet_coreml": ("yunet.mlpackage", f"{MODELS_REPO_RAW}/yunet.mlpackage.zip"),
     "face_landmarker": (
         "face_landmarker.task",
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
@@ -85,7 +90,6 @@ _REGISTRY = {
     # ONNX fallbacks (kept for back-compat with existing installs).
     "u2netp": ("u2netp.onnx", f"{MODELS_REPO_RAW}/u2netp.onnx"),
     "yolo26n": ("yolo26n.onnx", f"{MODELS_REPO_RAW}/yolo26n.onnx"),
-    "yolov8n": ("yolov8n.mlpackage", f"{MODELS_REPO_RAW}/yolov8n.mlpackage.zip"),
     "nima": ("nima.mlpackage", f"{MODELS_REPO_RAW}/nima.mlpackage.zip"),
     "places365": ("places365.mlpackage", f"{MODELS_REPO_RAW}/places365.mlpackage.zip"),
     "places365_labels": ("places365_labels.txt", f"{MODELS_REPO_RAW}/places365_labels.txt"),
@@ -93,7 +97,7 @@ _REGISTRY = {
 
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
-OPTIONAL_MODELS = ("u2netp_coreml", "yolo26n_coreml", "depth_coreml", "nima", "places365", "places365_labels")
+OPTIONAL_MODELS = ("u2netp_coreml", "yolo26n_coreml", "yunet_coreml", "depth_coreml", "nima", "places365", "places365_labels")
 
 
 def is_present(name: str) -> bool:
@@ -131,6 +135,35 @@ def ensure(name: str) -> Path:
         _verify(name, tmp)
         tmp.rename(target)
     return target
+
+
+_COREML_LOGGED = False
+
+
+def load_coreml(path: Path | str) -> Any:
+    """Load a .mlpackage with ANE-preferred compute units.
+
+    Default `ComputeUnit.ALL` lets CoreML pick the fastest backend per op:
+    ANE first, GPU second, CPU last. Override via SNAPGRADE_COMPUTE_UNITS
+    ∈ {all, cpu_and_gpu, cpu_and_neural_engine, cpu_only}.
+    """
+    import coremltools as ct  # type: ignore
+
+    global _COREML_LOGGED
+    sel = os.environ.get("SNAPGRADE_COMPUTE_UNITS", "all").lower()
+    units = {
+        "all": ct.ComputeUnit.ALL,
+        "cpu_and_gpu": ct.ComputeUnit.CPU_AND_GPU,
+        "cpu_and_neural_engine": ct.ComputeUnit.CPU_AND_NE,
+        "cpu_only": ct.ComputeUnit.CPU_ONLY,
+    }.get(sel, ct.ComputeUnit.ALL)
+    if not _COREML_LOGGED:
+        _COREML_LOGGED = True
+        import logging
+        logging.getLogger("snapgrade").info(
+            "CoreML backend ready (compute_units=%s); ANE used when available.", sel
+        )
+    return ct.models.MLModel(str(path), compute_units=units)
 
 
 def _download(url: str, dest: Path) -> None:

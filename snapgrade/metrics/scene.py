@@ -64,8 +64,8 @@ def _load() -> tuple[Any, list[str]] | None:
     if not mp or not lp:
         return None
     try:
-        import coremltools as ct
-        _MODEL = ct.models.MLModel(str(mp))
+        from .. import models as _m
+        _MODEL = _m.load_coreml(mp)
         _LABELS = [_clean_label(ln) for ln in lp.read_text().splitlines() if ln.strip()]
     except Exception:
         _MODEL, _LABELS = None, None

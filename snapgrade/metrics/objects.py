@@ -1,12 +1,11 @@
-"""Object detector via YOLO26n ONNX (~10 MB, COCO 80 classes).
+"""Object detector via YOLO26n (CoreML or ONNX, ~10 MB, COCO 80 classes).
 
-Prefers ~/.snapgrade/models/yolo26n.onnx, falling back to the older
-yolov8n.{mlpackage,onnx} so existing installs keep working. Override the path
-with SNAPGRADE_YOLO_MODEL. Optional labels file (yolo26n_labels.txt or
-yolov8n_labels.txt) defaults to the canonical COCO 80 list when missing.
+Prefers ~/.snapgrade/models/yolo26n.mlpackage, falls back to yolo26n.onnx.
+Override the path with SNAPGRADE_YOLO_MODEL. Optional labels file
+(yolo26n_labels.txt) defaults to the canonical COCO 80 list when missing.
 
-YOLO26 is exported with nms=False, so the raw output keeps YOLOv8's
-[1, 84, 8400] layout and the Python NMS below applies unchanged.
+YOLO26 is exported NMS-free: outputs are already-decoded [N, 6] boxes
+(xyxy + score + class_id), so no NMS step here.
 
 Returns: list of top detections (class, confidence, bbox) + primary class.
 """
@@ -20,39 +19,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-_SESSION = None
-_LOADED = False
-_LABELS: list[str] | None = None
 _IN_SIZE = 640
 _CONF_TH = 0.35
-_IOU_TH = 0.45
-
-
-def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_th: float = _IOU_TH) -> list[int]:
-    """Standard greedy NMS. Returns indices to keep, sorted by score desc."""
-    if boxes_xyxy.size == 0:
-        return []
-    order = scores.argsort()[::-1].tolist()
-    keep: list[int] = []
-    x0, y0, x1, y1 = boxes_xyxy[:, 0], boxes_xyxy[:, 1], boxes_xyxy[:, 2], boxes_xyxy[:, 3]
-    areas = (x1 - x0).clip(min=0) * (y1 - y0).clip(min=0)
-    while order:
-        i = order.pop(0)
-        keep.append(i)
-        if not order:
-            break
-        rest = np.array(order)
-        ix0 = np.maximum(x0[i], x0[rest])
-        iy0 = np.maximum(y0[i], y0[rest])
-        ix1 = np.minimum(x1[i], x1[rest])
-        iy1 = np.minimum(y1[i], y1[rest])
-        iw = (ix1 - ix0).clip(min=0)
-        ih = (iy1 - iy0).clip(min=0)
-        inter = iw * ih
-        union = areas[i] + areas[rest] - inter + 1e-6
-        iou = inter / union
-        order = rest[iou < iou_th].tolist()
-    return keep
 
 _COCO80 = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
@@ -74,12 +42,9 @@ def _model_path() -> Path | None:
     if p and Path(p).exists():
         return Path(p)
     models_dir = Path.home() / ".snapgrade" / "models"
-    # Preference order: YOLO26 CoreML, YOLO26 ONNX, then legacy YOLOv8.
     for candidate in (
         models_dir / "yolo26n.mlpackage",
         models_dir / "yolo26n.onnx",
-        models_dir / "yolov8n.mlpackage",
-        models_dir / "yolov8n.onnx",
     ):
         if candidate.exists():
             return candidate
@@ -107,15 +72,15 @@ def _load() -> Any | None:
     try:
         is_cml = mp.suffix == ".mlpackage" or mp.is_dir()
         if is_cml:
-            import coremltools as ct
-            _MODEL = ct.models.MLModel(str(mp))
+            from .. import models as _m
+            _MODEL = _m.load_coreml(mp)
             _IS_COREML = True
         else:
             import onnxruntime as ort
             _MODEL = ort.InferenceSession(str(mp), providers=["CPUExecutionProvider"])
             _IS_COREML = False
 
-        labels_file = mp.parent / "yolov8n_labels.txt"
+        labels_file = mp.parent / "yolo26n_labels.txt"
         if labels_file.exists():
             _LABELS = [ln.strip() for ln in labels_file.read_text().splitlines() if ln.strip()]
         else:
@@ -162,57 +127,23 @@ def analyze(rgb: np.ndarray) -> dict[str, Any]:
             canvas[:nh, :nw] = np.asarray(im, dtype=np.float32) / 255.0
             x = canvas.transpose(2, 0, 1)[None, ...].astype(np.float32)
             out = model.run(None, {model.get_inputs()[0].name: x})[0]
-            pred = np.asarray(out)[0]
-
-            # YOLO26 NMS-free export emits [N, 6] = xyxy + score + class_id —
-            # already decoded and deduped, so no NMS and no argmax needed.
-            if pred.ndim == 2 and pred.shape[1] == 6:
-                dets = []
-                for x0, y0, x1, y1, score, cls in pred:
-                    if score < _CONF_TH:
-                        continue
-                    ci = int(cls)
-                    dets.append({
-                        "class": labels[ci] if ci < len(labels) else str(ci),
-                        "conf": float(score),
-                        "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
-                    })
-                dets.sort(key=lambda d: -d["conf"])
-                return {"detections": dets[:10], "primary": dets[0]["class"] if dets else None}
-
-            # YOLOv8 raw output: [1, 84, 8400] — 4 box + 80 class scores → NMS.
-            if pred.shape[0] < pred.shape[1]:
-                pred = pred.T  # to [N, 84]
-            if pred.shape[1] < 5:
+            pred = np.asarray(out)
+            if pred.ndim == 3:
+                pred = pred[0]
+            # YOLO26 NMS-free export: [N, 6] = xyxy + score + class_id.
+            if pred.ndim != 2 or pred.shape[1] != 6:
                 return {}
-            boxes = pred[:, :4]
-            scores = pred[:, 4:]
-            cls_ids = scores.argmax(axis=1)
-            cls_conf = scores.max(axis=1)
-            keep = cls_conf >= _CONF_TH
-            boxes, cls_ids, cls_conf = boxes[keep], cls_ids[keep], cls_conf[keep]
-            if boxes.shape[0] == 0:
-                return {"detections": [], "primary": None}
-            # Convert cxcywh → xyxy in input-image coords first.
-            cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-            xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
-            # Per-class NMS so two different classes overlapping each other survive.
-            keep_idx: list[int] = []
-            for c in np.unique(cls_ids):
-                mask = cls_ids == c
-                sub_idx = np.where(mask)[0]
-                kept = _nms(xyxy[sub_idx], cls_conf[sub_idx])
-                keep_idx.extend(sub_idx[k] for k in kept)
-            keep_idx.sort(key=lambda i: -cls_conf[i])
             dets = []
-            for i in keep_idx[:20]:
-                x0, y0, x1, y1 = xyxy[i].tolist()
+            for x0, y0, x1, y1, score, cls in pred:
+                if score < _CONF_TH:
+                    continue
+                ci = int(cls)
                 dets.append({
-                    "class": labels[int(cls_ids[i])] if int(cls_ids[i]) < len(labels) else str(int(cls_ids[i])),
-                    "conf": float(cls_conf[i]),
+                    "class": labels[ci] if ci < len(labels) else str(ci),
+                    "conf": float(score),
                     "bbox": [int(x0 / scale), int(y0 / scale), int(x1 / scale), int(y1 / scale)],
                 })
-            primary = dets[0]["class"] if dets else None
-            return {"detections": dets[:10], "primary": primary}
+            dets.sort(key=lambda d: -d["conf"])
+            return {"detections": dets[:10], "primary": dets[0]["class"] if dets else None}
     except Exception:
         return {}

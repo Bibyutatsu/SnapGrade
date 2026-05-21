@@ -60,8 +60,8 @@ def _load():
         return None
     try:
         if mp.is_dir():
-            import coremltools as ct
-            _SESSION = ct.models.MLModel(str(mp))
+            from .. import models as _m
+            _SESSION = _m.load_coreml(mp)
             _IS_COREML = True
         else:
             import onnxruntime as ort

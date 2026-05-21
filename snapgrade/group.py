@@ -20,6 +20,7 @@ class BurstConfig:
     w_smile: float = 0.10                # blendshape `mouthSmile` — portrait pick
     w_exposure: float = 0.12
     w_aesthetic: float = 0.13
+    w_clipping: float = 0.10             # penalize blown highlights / crushed shadows
 
 
 @dataclass(frozen=True)
@@ -71,12 +72,15 @@ def _quality_score(metrics: dict, cfg: BurstConfig) -> float:
         eye_score = 1.0 - float(max_blink) if max_blink is not None else 1.0
         smile_score = float(eyes.get("max_smile") or 0.0)
     expo_score = 0.0 if (expo.get("overexposed") or expo.get("underexposed")) else 1.0
+    clip = float(expo.get("clipped_highlight") or 0.0) + float(expo.get("clipped_shadow") or 0.0)
+    clip_score = max(0.0, 1.0 - min(clip, 1.0))
     aesthetic = metrics.get("aesthetic_score", 0.5) or 0.5
     return (
         cfg.w_sharpness * sharp
         + cfg.w_eyes * eye_score
         + cfg.w_smile * smile_score
         + cfg.w_exposure * expo_score
+        + cfg.w_clipping * clip_score
         + cfg.w_aesthetic * aesthetic
     )
 
