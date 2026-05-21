@@ -45,6 +45,11 @@ class AnalysisResult:
     # None for callers (CLI `show`) that build a result directly.
     exif: exif.Exif | None = None
     content_hash: str | None = None
+    # MobileCLIP image embedding when SNAPGRADE_ENABLE_SEMANTIC=1; None otherwise.
+    # Stored as packed float32 bytes for direct INSERT into image_embeddings.
+    embedding: bytes | None = None
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
 
 
 def walk_images(root: Path) -> Iterator[Path]:
@@ -155,7 +160,7 @@ def _analyze_from_decoded(
     with _ML_LOCK:
         eye_report = face_expression.measure(rgb, faces=primaries)
 
-    aesthetic_score = aesthetic.score(rgb)
+    aesthetic_score, aesthetic_source = aesthetic.score(rgb)
     if "scene" in enabled:
         try:
             from .metrics import scene as _scene
@@ -239,6 +244,7 @@ def _analyze_from_decoded(
         "eyes": _dc_to_dict(eye_report),
         "noise_sigma": sigma,
         "aesthetic_score": aesthetic_score,
+        "aesthetic_source": aesthetic_source,
         "composition": _dc_to_dict(comp),
         "color": _dc_to_dict(color_info),
         "hashes": _dc_to_dict(hashes),
@@ -251,6 +257,21 @@ def _analyze_from_decoded(
         metrics["live_photo"] = {"video": str(live_video)}
     metrics.update(extra)
     t_cv = time.perf_counter() - t_cv_start
+
+    emb_bytes: bytes | None = None
+    emb_model: str | None = None
+    emb_dim: int | None = None
+    if os.environ.get("SNAPGRADE_ENABLE_SEMANTIC") or "semantic" in enabled:
+        try:
+            from .metrics import embed as _embed
+            vec = _embed.compute(rgb)
+            if vec is not None:
+                emb_bytes = vec.tobytes()
+                emb_model = _embed.MODEL_NAME
+                emb_dim = int(vec.size)
+        except Exception as e:  # pragma: no cover - opt-in
+            metrics["embedding_error"] = str(e)
+
     metrics["t_decode_s"] = round(t_decode, 4)
     metrics["t_ml_s"] = round(t_ml, 4)
     metrics["t_cv_s"] = round(t_cv, 4)
@@ -260,6 +281,9 @@ def _analyze_from_decoded(
         verdict=decide.decide(metrics),
         exif=exif_record,
         content_hash=content_hash,
+        embedding=emb_bytes,
+        embedding_model=emb_model,
+        embedding_dim=emb_dim,
     )
 
 
@@ -298,6 +322,10 @@ def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtim
     }
     image_id = db.upsert_image(conn, fields)
     db.save_metrics(conn, image_id, result.metrics)
+    if result.embedding is not None and result.embedding_model and result.embedding_dim:
+        db.save_embedding(
+            conn, image_id, result.embedding_model, result.embedding, result.embedding_dim,
+        )
     db.save_verdict(
         conn,
         image_id,
@@ -318,10 +346,23 @@ PERSIST_BATCH = 50  # rows flushed per outer transaction in analyze_folder
 
 
 def _default_workers() -> int:
-    # 4 is the sweet spot on the M1 Air: enough threads to keep decode + post-CV
-    # busy while the ML lock is held by one worker, without thrashing 8 GB RAM
-    # with N decoded 2000-px arrays in flight.
+    # SNAPGRADE_WORKERS overrides; otherwise 4 is the sweet spot on the M1 Air —
+    # enough threads to keep decode + post-CV busy while the ML lock is held by
+    # one worker, without thrashing 8 GB RAM with N decoded 2000-px arrays.
+    env = os.environ.get("SNAPGRADE_WORKERS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
     return min(4, max(1, (os.cpu_count() or 4) - 2))
+
+
+# Cap concurrent in-flight images (per worker). With a 2000-px decode at ~25 MB
+# RGB + intermediate buffers, 2× workers in flight is the ceiling before peak
+# RSS climbs past ~2.5 GB on M1 Air. Process pool is more sensitive than
+# threads since each worker has its own model RSS.
+_INFLIGHT_PER_WORKER = 2
 
 
 
@@ -389,18 +430,39 @@ def analyze_folder(
     use_processes = bool(os.environ.get("SNAPGRADE_USE_PROCESSES"))
     from concurrent.futures import ProcessPoolExecutor, as_completed
     PoolCls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+    # Bound in-flight work to cap peak RSS. Submitting all `pending` up front
+    # would queue every decoded array in memory; instead we keep ~2× workers
+    # in flight and refill as futures complete.
+    inflight_cap = max(n_workers * _INFLIGHT_PER_WORKER, n_workers + 1)
     with PoolCls(max_workers=n_workers) as pool:
-        futures = {pool.submit(analyze_one, p, max_edge, models): (p, st) for p, st in pending}
-        for fut in as_completed(futures):
-            p, st = futures[fut]
+        it = iter(pending)
+        futures: dict = {}
+
+        def _submit_next() -> bool:
             try:
-                r = fut.result()
-                buf.append((p, r, st.st_size, st.st_mtime))
-                if len(buf) >= PERSIST_BATCH:
-                    _flush()
-                yield r
-            except Exception as e:
-                log.exception("Failed to analyze %s: %s", p, e)
+                p, st = next(it)
+            except StopIteration:
+                return False
+            futures[pool.submit(analyze_one, p, max_edge, models)] = (p, st)
+            return True
+
+        for _ in range(inflight_cap):
+            if not _submit_next():
+                break
+
+        while futures:
+            for fut in as_completed(list(futures)):
+                p, st = futures.pop(fut)
+                try:
+                    r = fut.result()
+                    buf.append((p, r, st.st_size, st.st_mtime))
+                    if len(buf) >= PERSIST_BATCH:
+                        _flush()
+                    yield r
+                except Exception as e:
+                    log.exception("Failed to analyze %s: %s", p, e)
+                _submit_next()
+                break
     _flush()
 
 

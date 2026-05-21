@@ -32,8 +32,31 @@ function LibraryScreen({ stats }) {
   const { MOCK_LIBRARIES } = window.SG_DATA;
   const [folder, setFolder] = useState('');
   const [msg, setMsg]       = useState('');
-  const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: false, objects: false });
+  const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: false, objects: false, semantic: false });
   const [postSteps, setPostSteps] = useState({ group: true, faces: false });
+  const [query, setQuery]   = useState('');
+  const [results, setResults] = useState(null);  // null = no search yet, [] = empty results
+  const [searching, setSearching] = useState(false);
+  const [searchMsg, setSearchMsg] = useState('');
+
+  async function runSearch() {
+    const q = query.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearchMsg('');
+    try {
+      const items = await window.SG_API.search(q, { k: 24 });
+      setResults(items);
+      if (!items.length) {
+        setSearchMsg('No matches. Re-run analyze with SNAPGRADE_ENABLE_SEMANTIC=1 if no embeddings exist yet.');
+      }
+    } catch (e) {
+      setSearchMsg(`search failed: ${e.message}`);
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }
 
   async function pickFolder() {
     setMsg('');
@@ -101,6 +124,7 @@ function LibraryScreen({ stats }) {
     subject_seg:  { label: 'Salient subject seg',    note: 'U²-Netp — better subject mask for sharpness', download: true  },
     objects:      { label: 'Object detector',        note: 'YOLO26n — COCO classes, adds {object:class} token', download: true  },
     content_type: { label: 'Screenshot / document',  note: 'Apple Vision — no download, runs on Neural Engine', download: false },
+    semantic:     { label: 'Semantic search index',   note: 'MobileCLIP-S0 — 512-d embedding per image, enables text search', download: true  },
   };
 
   return (
@@ -146,6 +170,40 @@ function LibraryScreen({ stats }) {
             </label>
           </div>
           {msg && <div className="sg-toast">{msg}</div>}
+        </div>
+
+        <div className="sg-card">
+          <div className="sg-card-no">★</div>
+          <h2 className="sg-card-h2">Search by <em>description</em>.</h2>
+          <div className="sg-card-sub">MobileCLIP semantic search · requires embeddings (set SNAPGRADE_ENABLE_SEMANTIC=1 during ingest)</div>
+          <div style={{ display:'flex', gap:10, alignItems:'stretch' }}>
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+              placeholder='e.g. "crowd of people", "blurry photo", "text on a sign"'
+              className="sg-folder-display"
+              style={{ flex:1, color:'var(--c-text)', fontStyle:'normal' }}
+            />
+            <Btn variant="primary" disabled={!query.trim() || searching} onClick={runSearch}>
+              {searching ? 'Searching…' : 'Search'}
+            </Btn>
+          </div>
+          {searchMsg && <div className="sg-toast">{searchMsg}</div>}
+          {results && results.length > 0 && (
+            <div style={{ marginTop:14, display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10 }}>
+              {results.map(r => (
+                <a key={r.image_id} href={`/api/images/${r.image_id}/preview`} target="_blank" rel="noreferrer"
+                   style={{ position:'relative', display:'block', aspectRatio:'1/1', overflow:'hidden', borderRadius:'var(--radius)', border:'1px solid var(--c-border2)' }}>
+                  <img src={r.thumb} alt="" loading="lazy" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                  <span style={{ position:'absolute', bottom:4, right:4, fontSize:9, padding:'2px 6px', background:'rgba(0,0,0,0.7)', color:'#fff', borderRadius:'var(--radius)', letterSpacing:'0.05em' }}>
+                    {r.score.toFixed(3)}
+                  </span>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="sg-card">

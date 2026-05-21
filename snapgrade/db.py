@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS event_members (
     PRIMARY KEY (event_id, image_id)
 );
 CREATE INDEX IF NOT EXISTS idx_event_members_image ON event_members(image_id);
+
+CREATE TABLE IF NOT EXISTS image_embeddings (
+    image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,        -- e.g. "mobileclip_s0"
+    dim INTEGER NOT NULL,
+    embedding BLOB NOT NULL     -- float32, L2-normalized
+);
 """
 
 
@@ -277,6 +284,17 @@ def save_metrics(conn: sqlite3.Connection, image_id: int, metrics: dict[str, Any
         "INSERT INTO metrics(image_id, json) VALUES(?, ?) "
         "ON CONFLICT(image_id) DO UPDATE SET json=excluded.json",
         (image_id, json.dumps(metrics, default=str)),
+    )
+
+
+def save_embedding(
+    conn: sqlite3.Connection, image_id: int, model: str, vec: bytes, dim: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO image_embeddings(image_id, model, dim, embedding) VALUES(?,?,?,?) "
+        "ON CONFLICT(image_id) DO UPDATE SET "
+        "  model=excluded.model, dim=excluded.dim, embedding=excluded.embedding",
+        (image_id, model, dim, vec),
     )
 
 

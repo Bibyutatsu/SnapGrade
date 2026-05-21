@@ -61,10 +61,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _face_quality(face, rgb: np.ndarray) -> float:
-    """Lightweight face-image-quality score in [0, 1].
+    """FIQA-style face quality score in [0, 1].
 
-    Combines detector confidence, on-frame face size, and crop sharpness — the
-    signals that decide "best photo of this person". No extra model needed.
+    Combines detector confidence, frame coverage, crop sharpness, and pose
+    frontality — the canonical FIQA inputs. InsightFace's `Face.pose` is
+    (pitch, yaw, roll) in degrees when the model is available; frontal faces
+    (|yaw|, |pitch| ≲ 15°) get full pose credit.
     """
     import cv2
 
@@ -83,7 +85,18 @@ def _face_quality(face, rgb: np.ndarray) -> float:
         # Normalize Laplacian variance into ~[0,1]; 500 ≈ crisp face.
         sharp_score = min(1.0, float(cv2.Laplacian(gray, cv2.CV_64F).var()) / 500.0)
 
-    return float(0.4 * det + 0.3 * size_score + 0.3 * sharp_score)
+    pose = getattr(face, "pose", None)
+    pose_score = 1.0
+    if pose is not None:
+        try:
+            pitch, yaw, _roll = (float(v) for v in pose[:3])
+            # Frontal gets 1.0, ±45° drops to 0. Linear decay; profile shots
+            # (>45°) get 0 — by far the most common "bad photo" failure mode.
+            pose_score = max(0.0, 1.0 - max(abs(pitch), abs(yaw)) / 45.0)
+        except (TypeError, ValueError):
+            pose_score = 1.0
+
+    return float(0.3 * det + 0.2 * size_score + 0.3 * sharp_score + 0.2 * pose_score)
 
 
 def detect_and_store(
@@ -146,6 +159,24 @@ def best_faces_per_cluster(conn: sqlite3.Connection) -> dict[int, dict]:
                 "bbox": json.loads(r["bbox"]),
             }
     return best
+
+
+def best_photo_for_cluster(conn: sqlite3.Connection, cluster_id: int) -> dict | None:
+    """Highest-quality face row for a single cluster, or None if empty."""
+    _ensure_schema(conn)
+    row = conn.execute(
+        "SELECT image_id, bbox, quality FROM faces "
+        "WHERE cluster_id = ? AND quality IS NOT NULL "
+        "ORDER BY quality DESC LIMIT 1",
+        (int(cluster_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "image_id": int(row["image_id"]),
+        "quality": float(row["quality"]),
+        "bbox": json.loads(row["bbox"]),
+    }
 
 
 class _UnionFind:

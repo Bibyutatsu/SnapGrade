@@ -367,6 +367,42 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
     return {"started": True, "model": name, "url": fetch_url, "dest": str(dest)}
 
 
+@app.get("/api/search")
+def semantic_search(
+    q: str = Query(..., description="Natural-language query"),
+    k: int = Query(20, ge=1, le=200),
+    library_id: int | None = Query(None),
+) -> dict[str, Any]:
+    """Top-k images for a text query (MobileCLIP cosine ranking).
+
+    Returns an empty list if the text model isn't installed or no embeddings
+    are present yet (enable with SNAPGRADE_ENABLE_SEMANTIC=1 during analyze).
+    """
+    from . import search as _search
+    conn = _conn()
+    hits = _search.search(conn, q, k=k, library_id=library_id)
+    if not hits:
+        return {"items": [], "q": q}
+    ids = [h[0] for h in hits]
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, path FROM images WHERE id IN ({placeholders})", ids,
+    ).fetchall()
+    by_id = {int(r["id"]): r for r in rows}
+    items = []
+    for image_id, score in hits:
+        r = by_id.get(image_id)
+        if not r:
+            continue
+        items.append({
+            "image_id": image_id,
+            "score": round(float(score), 4),
+            "path": r["path"],
+            "thumb": f"/api/images/{image_id}/thumb?size=256",
+        })
+    return {"items": items, "q": q}
+
+
 @app.get("/api/folders")
 def list_folders() -> dict[str, Any]:
     """Back-compat: returns library root paths (formerly derived from image parents)."""
@@ -752,6 +788,24 @@ def faces_clusters(
             ],
         })
     return {"items": items}
+
+
+@app.get("/api/faces/clusters/{cluster_id}/best")
+def faces_cluster_best(cluster_id: int) -> dict[str, Any]:
+    """Highest-quality face in a single cluster — powers "best photo of X"."""
+    from . import face_cluster
+    conn = _conn()
+    rep = face_cluster.best_photo_for_cluster(conn, cluster_id)
+    if rep is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+    return {
+        "cluster_id": int(cluster_id),
+        "image_id": rep["image_id"],
+        "quality": rep["quality"],
+        "bbox": rep["bbox"],
+        "thumb": f"/api/images/{rep['image_id']}/thumb?size=512",
+    }
 
 
 @app.get("/api/tokens")

@@ -91,13 +91,32 @@ _REGISTRY = {
     "u2netp": ("u2netp.onnx", f"{MODELS_REPO_RAW}/u2netp.onnx"),
     "yolo26n": ("yolo26n.onnx", f"{MODELS_REPO_RAW}/yolo26n.onnx"),
     "nima": ("nima.mlpackage", f"{MODELS_REPO_RAW}/nima.mlpackage.zip"),
+    # HyperIQA (CVPR 2020) — ResNet50-backed NR-IQA. Better correlation with
+    # human ratings than NIMA. (TopIQ was the original plan, blocked by a
+    # coremltools 9.0 bug with multi-element int casts; HyperIQA's pure
+    # conv+linear graph converts cleanly.)
+    "hyperiqa": ("hyperiqa.mlpackage", f"{MODELS_REPO_RAW}/hyperiqa.mlpackage.zip"),
+    # MobileCLIP-S0 — Apple's ANE-friendly CLIP variant. Image tower + text
+    # tower are separate .mlpackages so we can load only what's needed.
+    "mobileclip_image": (
+        "mobileclip_s0_image.mlpackage",
+        f"{MODELS_REPO_RAW}/mobileclip_s0_image.mlpackage.zip",
+    ),
+    "mobileclip_text": (
+        "mobileclip_s0_text.mlpackage",
+        f"{MODELS_REPO_RAW}/mobileclip_s0_text.mlpackage.zip",
+    ),
     "places365": ("places365.mlpackage", f"{MODELS_REPO_RAW}/places365.mlpackage.zip"),
     "places365_labels": ("places365_labels.txt", f"{MODELS_REPO_RAW}/places365_labels.txt"),
 }
 
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
-OPTIONAL_MODELS = ("u2netp_coreml", "yolo26n_coreml", "yunet_coreml", "depth_coreml", "nima", "places365", "places365_labels")
+OPTIONAL_MODELS = (
+    "u2netp_coreml", "yolo26n_coreml", "yunet_coreml", "depth_coreml",
+    "hyperiqa", "nima", "places365", "places365_labels",
+    "mobileclip_image", "mobileclip_text",
+)
 
 
 def is_present(name: str) -> bool:

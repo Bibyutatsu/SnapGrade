@@ -206,6 +206,14 @@
       const m = minSize ?? prefs.faceMinSize ?? 5;
       return jget(`/api/faces/clusters?min_size=${m}`).then(r => r.items || []);
     },
+    search(q, { k = 24, libraryId } = {}) {
+      const qs = new URLSearchParams({ q, k });
+      if (libraryId != null) qs.set('library_id', libraryId);
+      return jget(`/api/search?${qs.toString()}`).then(r => r.items || []);
+    },
+    bestPhotoForCluster(clusterId) {
+      return jget(`/api/faces/clusters/${clusterId}/best`);
+    },
   };
 
   // ── Persisted UI preferences (face clustering thresholds, etc.) ────────────

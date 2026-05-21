@@ -51,7 +51,7 @@ def _stage_times_from_metrics(metrics: dict) -> tuple[float, float, float]:
     )
 
 
-def run(label: str, root: Path, reuse_db: bool, max_edge: int) -> None:
+def run(label: str, root: Path, reuse_db: bool, max_edge: int, workers: int | None = None) -> None:
     from snapgrade import db, pipeline
 
     if not root.is_dir():
@@ -76,7 +76,9 @@ def run(label: str, root: Path, reuse_db: bool, max_edge: int) -> None:
     n = 0
     decode_sum = ml_sum = cv_sum = 0.0
     progress_every = max(1, int(os.environ.get("SNAPGRADE_BENCH_PROGRESS", "50")))
-    for r in pipeline.analyze_folder(root, db_path=db_path, force=not reuse_db, max_edge=max_edge):
+    for r in pipeline.analyze_folder(
+        root, db_path=db_path, force=not reuse_db, max_edge=max_edge, workers=workers,
+    ):
         n += 1
         d, m, c = _stage_times_from_metrics(r.metrics)
         decode_sum += d
@@ -125,8 +127,12 @@ def main() -> None:
         "--reuse-db", action="store_true",
         help="Use ~/.snapgrade/library.db (warm mtime cache) instead of a temp DB.",
     )
+    p.add_argument(
+        "--workers", type=int, default=None,
+        help="Worker count for analyze_folder. Default: SNAPGRADE_WORKERS env or pipeline auto.",
+    )
     args = p.parse_args()
-    run(args.label, args.root, args.reuse_db, args.max_edge)
+    run(args.label, args.root, args.reuse_db, args.max_edge, workers=args.workers)
 
 
 if __name__ == "__main__":
