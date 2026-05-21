@@ -41,7 +41,18 @@ def analyze(
     force: bool = typer.Option(False, "--force", help="Re-analyze even if cached"),
     max_edge: int = typer.Option(2000, "--max-edge", help="Long-edge size for analysis"),
     workers: int = typer.Option(0, "--workers", help="Thread count (0 = auto)"),
-    models: str = typer.Option("", "--models", help="Comma-separated optional models: scene,content_type,objects,subject_seg"),
+    models: str = typer.Option(
+        "",
+        "--models",
+        help=(
+            "Comma-separated optional models to enable. Examples: "
+            "scene, content_type (Vision OCR + screenshot/doc detection), "
+            "ocr (alias for content_type with full OCR text retention), "
+            "objects, subject_seg, depth. "
+            "Vision-based content_type is off by default — enable when OCR / "
+            "screenshot culling matters for the library."
+        ),
+    ),
 ) -> None:
     """Recursively analyze a folder of images."""
     model_list = [m.strip() for m in models.split(",") if m.strip()] or None

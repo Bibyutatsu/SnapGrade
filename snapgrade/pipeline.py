@@ -20,7 +20,8 @@ import hashlib
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,11 @@ class AnalysisResult:
     path: Path
     metrics: dict[str, Any]
     verdict: decide.Verdict
+    # Filled in the worker thread so the consumer's persist phase is pure DB
+    # work — no extra file I/O while a transaction is open. Both default to
+    # None for callers (CLI `show`) that build a result directly.
+    exif: exif.Exif | None = None
+    content_hash: str | None = None
 
 
 def walk_images(root: Path) -> Iterator[Path]:
@@ -73,9 +79,32 @@ def _live_photo_video(path: Path) -> Path | None:
 
 
 def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = None) -> AnalysisResult:
+    t0 = time.perf_counter()
     img = decode.decode(path, max_edge=max_edge)
+    t_decode = time.perf_counter() - t0
+    # Read EXIF + content_hash here (in the worker thread) so the consumer's
+    # persist phase doesn't re-open the file under a held DB transaction.
+    ex = exif.read_exif(path)
+    ch = _content_hash(path)
+    return _analyze_from_decoded(
+        path, img, models=models, t_decode=t_decode, exif_record=ex, content_hash=ch,
+    )
+
+
+def _analyze_from_decoded(
+    path: Path,
+    img: Any,
+    models: list[str] | None = None,
+    t_decode: float = 0.0,
+    exif_record: exif.Exif | None = None,
+    content_hash: str | None = None,
+) -> AnalysisResult:
+    """The post-decode half of analyze_one. Used directly by the staged
+    pipeline (decoder pool → consumer) so the consumer doesn't repeat decode.
+    """
     rgb = img.rgb
     enabled = set(models or [])
+    t_ml_start = time.perf_counter()
 
     # ML phase: YuNet and MediaPipe are not thread-safe — serialize.
     with _ML_LOCK:
@@ -124,33 +153,54 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
                 extra["scene"] = _scene.analyze(rgb)
             except Exception as e:  # pragma: no cover - opt-in
                 extra["scene_error"] = str(e)
-        # Content type (screenshot / document / photo) + OCR + animals, all via
-        # Apple Vision — no model download. Runs by default when Vision is
-        # available because culling screenshots/docs is a core feature; opt out
-        # with the "no_content_type" pseudo-model. "screendoc"/"ocr" are aliases.
+        # Content type (screenshot / document / photo) + OCR + animals via
+        # Apple Vision. OPT-IN: pass any of "content_type" / "ocr" / "vision"
+        # in the models list to enable. Vision OCR is the dominant per-image
+        # ML cost on photo libraries (~0.3-0.5s/image) and is wasted on the
+        # 99%+ of camera photos that are clearly not screenshots — so it's
+        # off by default. Enable per-library when OCR / screenshot-culling /
+        # text-in-scene search actually matters.
+        # Back-compat: "screendoc" is an alias for the old screendoc model.
+        # "no_content_type" remains an explicit kill-switch for the rare case
+        # where a caller wants to override an enabled-by-config setting.
         from .metrics import vision as _vis
         want_content = (
             "no_content_type" not in enabled
-            and (_vis.is_available() or enabled & {"content_type", "ocr", "screendoc"})
+            and _vis.is_available()
+            and bool(enabled & {"content_type", "ocr", "vision", "screendoc"})
         )
         if want_content:
             try:
-                ocr_regions = _vis.recognize_text(rgb) if _vis.is_available() else []
-                extra["ocr"] = ocr_regions
-                # Camera-EXIF presence is the strongest screenshot signal —
-                # screenshots have none.
-                has_camera = bool(exif.read_exif(path).camera_model)
-                from .metrics import content_type as _ct
-                extra["content_type"] = _ct.analyze(
-                    rgb, ocr_regions=ocr_regions, has_camera=has_camera
-                )
-                if _vis.is_available():
-                    animals = _vis.recognize_animals(rgb)
-                    if animals:
-                        extra["animals"] = animals
+                # Camera-EXIF presence is the strongest content-type signal:
+                # screenshots/docs never carry a camera model. When present,
+                # we can skip the OCR + document-segmentation hop entirely
+                # (cheap photo-class fast path) — unless the caller explicitly
+                # asked for OCR text, in which case we still run it so the
+                # text-in-scene corpus is captured.
+                _ex_for_cam = exif_record if exif_record is not None else exif.read_exif(path)
+                has_camera = bool(_ex_for_cam.camera_model)
+                want_ocr_always = bool(enabled & {"ocr", "vision"})
+                if has_camera and not want_ocr_always:
+                    extra["ocr"] = []
+                    extra["content_type"] = {
+                        "class": "photo", "conf": 0.95, "source": "exif_fastpath",
+                        "has_camera": True,
+                    }
+                else:
+                    ocr_regions = _vis.recognize_text(rgb)
+                    extra["ocr"] = ocr_regions
+                    from .metrics import content_type as _ct
+                    extra["content_type"] = _ct.analyze(
+                        rgb, ocr_regions=ocr_regions, has_camera=has_camera,
+                    )
+                animals = _vis.recognize_animals(rgb)
+                if animals:
+                    extra["animals"] = animals
             except Exception as e:  # pragma: no cover
                 extra["content_type_error"] = str(e)
+    t_ml = time.perf_counter() - t_ml_start
 
+    t_cv_start = time.perf_counter()
     # Prefer the largest primary subject's bbox for subject-aware sharpness.
     bbox = primaries[0].bbox if primaries else subject.primary_bbox(subjects)
     sharp_global = sharpness.measure(rgb)
@@ -195,20 +245,34 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
     if live_video is not None:
         metrics["live_photo"] = {"video": str(live_video)}
     metrics.update(extra)
-    return AnalysisResult(path=path, metrics=metrics, verdict=decide.decide(metrics))
+    t_cv = time.perf_counter() - t_cv_start
+    metrics["t_decode_s"] = round(t_decode, 4)
+    metrics["t_ml_s"] = round(t_ml, 4)
+    metrics["t_cv_s"] = round(t_cv, 4)
+    return AnalysisResult(
+        path=path,
+        metrics=metrics,
+        verdict=decide.decide(metrics),
+        exif=exif_record,
+        content_hash=content_hash,
+    )
 
 
 def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
     """Persist a single analysis result. Caller MUST hold an open transaction —
     batched writes amortize per-row commit cost on big-library runs.
+
+    Falls back to reading EXIF / content_hash here only if the worker thread
+    didn't pre-populate them (e.g. an older AnalysisResult shape).
     """
-    ex = exif.read_exif(path)
+    ex = result.exif if result.exif is not None else exif.read_exif(path)
+    ch = result.content_hash if result.content_hash is not None else _content_hash(path)
     fields = {
         "path": str(path),
         **({"library_id": library_id} if library_id is not None else {}),
         "size_bytes": st_size,
         "mtime": st_mtime,
-        "content_hash": _content_hash(path),
+        "content_hash": ch,
         "kind": result.metrics["kind"],
         "width": result.metrics["source_size"][0],
         "height": result.metrics["source_size"][1],
@@ -249,10 +313,12 @@ PERSIST_BATCH = 50  # rows flushed per outer transaction in analyze_folder
 
 
 def _default_workers() -> int:
-    # Sweet spot on the M1 Air: enough threads to keep decode busy while the
-    # ML lock is held, without thrashing the 8 GB unified RAM with N decoded
-    # 2000-px arrays in flight.
+    # 4 is the sweet spot on the M1 Air: enough threads to keep decode + post-CV
+    # busy while the ML lock is held by one worker, without thrashing 8 GB RAM
+    # with N decoded 2000-px arrays in flight.
     return min(4, max(1, (os.cpu_count() or 4) - 2))
+
+
 
 
 def analyze_folder(
@@ -304,7 +370,21 @@ def analyze_folder(
         _flush()
         return
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+    # Per-image worker: decode → ML (serialised on _ML_LOCK) → post-CV. The
+    # lock means only one thread is in the ML phase at a time, but the others
+    # stay busy decoding the next image and running post-CV on the previous
+    # one. Empirically faster than a single-consumer staged pipeline because
+    # the post-CV (sharpness/exposure/noise/composition/phash) actually
+    # parallelises well across threads.
+    #
+    # SNAPGRADE_USE_PROCESSES=1 swaps the thread pool for a process pool —
+    # useful on Intel Macs (no ANE) where GIL contention on heavier post-CV
+    # work can dominate. Default (threads) is the right call on Apple Silicon
+    # because native libs already release the GIL during decode/inference.
+    use_processes = bool(os.environ.get("SNAPGRADE_USE_PROCESSES"))
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    PoolCls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+    with PoolCls(max_workers=n_workers) as pool:
         futures = {pool.submit(analyze_one, p, max_edge, models): (p, st) for p, st in pending}
         for fut in as_completed(futures):
             p, st = futures[fut]

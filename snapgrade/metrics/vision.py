@@ -69,8 +69,16 @@ def _norm_box_to_px(box, w: int, h: int) -> list[int]:
     return [int(x), int(y_top), int(x + bw), int(y_top + bh)]
 
 
-def recognize_text(rgb: np.ndarray, max_results: int = 50) -> list[dict[str, Any]]:
-    """OCR. Returns [{text, confidence, bbox}], empty on any failure."""
+def recognize_text(
+    rgb: np.ndarray, max_results: int = 50, accurate: bool = False,
+) -> list[dict[str, Any]]:
+    """OCR. Returns [{text, confidence, bbox}], empty on any failure.
+
+    `accurate=False` (default) uses Vision's "Fast" recognition level: ~3-5×
+    faster than Accurate and good enough for screenshot/document detection,
+    which is the only consumer in the pipeline. Pass `accurate=True` when the
+    text itself matters (future: full-text library search).
+    """
     if not is_available():
         return []
     try:
@@ -81,7 +89,18 @@ def recognize_text(rgb: np.ndarray, max_results: int = 50) -> list[dict[str, Any
         if handler is None:
             return []
         req = Vision.VNRecognizeTextRequest.alloc().init()
-        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        level = (
+            Vision.VNRequestTextRecognitionLevelAccurate
+            if accurate
+            else Vision.VNRequestTextRecognitionLevelFast
+        )
+        req.setRecognitionLevel_(level)
+        # Language correction adds significant latency for no gain in the
+        # screenshot/document classifier path.
+        try:
+            req.setUsesLanguageCorrection_(False)
+        except AttributeError:
+            pass
         if not _perform(handler, req):
             return []
         out: list[dict[str, Any]] = []

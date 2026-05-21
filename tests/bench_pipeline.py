@@ -41,14 +41,14 @@ def _peak_rss_mb() -> float:
     return rss / 1024
 
 
-def _stage_times_from_metrics(metrics: dict) -> tuple[float, float]:
-    """Coarse split: assume decode/EXIF/cheap-CV stages report `t_decode_s`
-    when populated by pipeline instrumentation; otherwise return 0s. Inference
-    time is everything else minus persist (persist measured separately at the
-    caller level)."""
-    decode = float(metrics.get("t_decode_s") or 0.0)
-    infer = float(metrics.get("t_infer_s") or 0.0)
-    return decode, infer
+def _stage_times_from_metrics(metrics: dict) -> tuple[float, float, float]:
+    """Read per-stage timings emitted by `_analyze_from_decoded`. Returns
+    (decode, ml, cv) seconds — all zero on legacy rows without instrumentation."""
+    return (
+        float(metrics.get("t_decode_s") or 0.0),
+        float(metrics.get("t_ml_s") or 0.0),
+        float(metrics.get("t_cv_s") or 0.0),
+    )
 
 
 def run(label: str, root: Path, reuse_db: bool, max_edge: int) -> None:
@@ -74,28 +74,37 @@ def run(label: str, root: Path, reuse_db: bool, max_edge: int) -> None:
 
     t0 = time.perf_counter()
     n = 0
-    decode_sum = 0.0
-    infer_sum = 0.0
+    decode_sum = ml_sum = cv_sum = 0.0
+    progress_every = max(1, int(os.environ.get("SNAPGRADE_BENCH_PROGRESS", "50")))
     for r in pipeline.analyze_folder(root, db_path=db_path, force=not reuse_db, max_edge=max_edge):
         n += 1
-        d, i = _stage_times_from_metrics(r.metrics)
+        d, m, c = _stage_times_from_metrics(r.metrics)
         decode_sum += d
-        infer_sum += i
+        ml_sum += m
+        cv_sum += c
+        if n % progress_every == 0:
+            now = time.perf_counter() - t0
+            ips_so_far = n / now if now > 0 else 0.0
+            print(
+                f"[bench] {n:5d}  wall={now:7.1f}s  img/s={ips_so_far:5.2f}  "
+                f"rss={_peak_rss_mb():6.1f}MB",
+                flush=True,
+            )
     elapsed = time.perf_counter() - t0
     rss = _peak_rss_mb()
     ips = n / elapsed if elapsed > 0 else 0.0
 
     row = (
         f"| {label} | {n} | {elapsed:.2f} | {ips:.2f} | "
-        f"{decode_sum:.2f} | {infer_sum:.2f} | {rss:.1f} | "
+        f"{decode_sum:.2f} | {ml_sum:.2f} | {cv_sum:.2f} | {rss:.1f} | "
         f"{root.name} | reuse_db={reuse_db} |"
     )
     print(row)
 
     header = (
-        "| Label | N | Wall (s) | img/s | Decode-sum (s) | Infer-sum (s) | "
-        "Peak RSS (MB) | Corpus | Notes |\n"
-        "|---|---|---|---|---|---|---|---|---|\n"
+        "| Label | N | Wall (s) | img/s | Decode-sum (s) | ML-sum (s) | "
+        "CV-sum (s) | Peak RSS (MB) | Corpus | Notes |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
     )
     if not RESULTS_FILE.exists():
         RESULTS_FILE.write_text("# SnapGrade bench results\n\n" + header)
@@ -103,6 +112,8 @@ def run(label: str, root: Path, reuse_db: bool, max_edge: int) -> None:
         RESULTS_FILE.write_text(RESULTS_FILE.read_text() + "\n" + header)
     with RESULTS_FILE.open("a") as f:
         f.write(row + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def main() -> None:
