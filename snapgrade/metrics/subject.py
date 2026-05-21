@@ -8,14 +8,18 @@ the primary subject so subject-aware sharpness focuses on the right thing.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
 import cv2
 import numpy as np
 
-_YUNET = None
-_YUNET_INPUT_SIZE: tuple[int, int] | None = None
+# cv2.FaceDetectorYN keeps mutable state (input size, score threshold) plus
+# internal scratch buffers — calling .detect on the same instance from multiple
+# threads races. We hand each worker thread its own detector via threading.local
+# so face detection can run outside the global ML lock.
+_YUNET_LOCAL = threading.local()
 
 # Minimum bbox area (fraction of image) for a face to count as a primary
 # subject at all. Below this, the largest face is too small to trust even if
@@ -38,12 +42,12 @@ class Subject:
 
 
 def _yunet():
-    global _YUNET
-    if _YUNET is None:
+    det = getattr(_YUNET_LOCAL, "detector", None)
+    if det is None:
         from .. import models
 
         path = models.ensure("yunet")
-        _YUNET = cv2.FaceDetectorYN.create(
+        det = cv2.FaceDetectorYN.create(
             str(path),
             "",
             input_size=(320, 320),
@@ -51,16 +55,17 @@ def _yunet():
             nms_threshold=0.3,
             top_k=50,
         )
-    return _YUNET
+        _YUNET_LOCAL.detector = det
+        _YUNET_LOCAL.input_size = None
+    return det
 
 
 def detect_faces(rgb: np.ndarray, score_threshold: float = 0.7) -> list[Subject]:
-    global _YUNET_INPUT_SIZE
     h, w = rgb.shape[:2]
     detector = _yunet()
-    if _YUNET_INPUT_SIZE != (w, h):
+    if getattr(_YUNET_LOCAL, "input_size", None) != (w, h):
         detector.setInputSize((w, h))
-        _YUNET_INPUT_SIZE = (w, h)
+        _YUNET_LOCAL.input_size = (w, h)
     detector.setScoreThreshold(score_threshold)
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     _, faces = detector.detect(bgr)

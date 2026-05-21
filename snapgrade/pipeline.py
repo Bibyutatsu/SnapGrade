@@ -106,98 +106,103 @@ def _analyze_from_decoded(
     enabled = set(models or [])
     t_ml_start = time.perf_counter()
 
-    # ML phase: YuNet and MediaPipe are not thread-safe — serialize.
+    # ML phase. Only MediaPipe FaceLandmarker truly needs the global lock — its
+    # Tasks runtime crashes when reentered from multiple threads. Everything
+    # else runs concurrently:
+    #   - YuNet: per-thread instances (see subject._YUNET_LOCAL).
+    #   - CoreML predict: Apple's MLModel.predict is thread-safe; the ANE/GPU
+    #     serializes internally so we don't gain ANE parallelism, but other
+    #     workers stay free to decode/CV while one runs inference.
+    #   - Apple Vision: VNImageRequestHandler is per-call, also thread-safe.
+    subjects = subject.detect_subjects(rgb)
+    extra: dict[str, Any] = {}
+    # Run object/saliency models BEFORE blink so primaries can be disambiguated
+    # from a crowd by foreground signals.
+    if "subject_seg" in enabled:
+        try:
+            from .metrics import subject_seg as _ss
+            extra["subject_seg"] = _ss.analyze(rgb)
+        except Exception as e:  # pragma: no cover
+            extra["subject_seg_error"] = str(e)
+    if "objects" in enabled:
+        try:
+            from .metrics import objects as _obj
+            extra["objects"] = _obj.analyze(rgb)
+        except Exception as e:  # pragma: no cover
+            extra["objects_error"] = str(e)
+    if "depth" in enabled:
+        try:
+            from .metrics import depth as _depth
+            extra["depth"] = _depth.analyze(rgb)
+        except Exception as e:  # pragma: no cover
+            extra["depth_error"] = str(e)
+
+    salient_bbox = None
+    if isinstance(extra.get("subject_seg"), dict):
+        salient_bbox = extra["subject_seg"].get("bbox")
+    person_bboxes: list[list[int]] = []
+    if isinstance(extra.get("objects"), dict):
+        for d in extra["objects"].get("detections", []) or []:
+            if d.get("class") == "person" and d.get("bbox"):
+                person_bboxes.append(d["bbox"])
+    primaries = subject.primary_subjects(
+        subjects, rgb.shape,
+        salient_bbox=salient_bbox,
+        person_bboxes=person_bboxes or None,
+    )
+
+    # MediaPipe blendshape pass — the one piece that must be serialized.
     with _ML_LOCK:
-        subjects = subject.detect_subjects(rgb)
-        extra: dict[str, Any] = {}
-        # Run object/saliency models BEFORE blink so primaries can be
-        # disambiguated from a crowd by foreground signals.
-        if "subject_seg" in enabled:
-            try:
-                from .metrics import subject_seg as _ss
-                extra["subject_seg"] = _ss.analyze(rgb)
-            except Exception as e:  # pragma: no cover
-                extra["subject_seg_error"] = str(e)
-        if "objects" in enabled:
-            try:
-                from .metrics import objects as _obj
-                extra["objects"] = _obj.analyze(rgb)
-            except Exception as e:  # pragma: no cover
-                extra["objects_error"] = str(e)
-        if "depth" in enabled:
-            try:
-                from .metrics import depth as _depth
-                extra["depth"] = _depth.analyze(rgb)
-            except Exception as e:  # pragma: no cover
-                extra["depth_error"] = str(e)
-
-        salient_bbox = None
-        if isinstance(extra.get("subject_seg"), dict):
-            salient_bbox = extra["subject_seg"].get("bbox")
-        person_bboxes: list[list[int]] = []
-        if isinstance(extra.get("objects"), dict):
-            for d in extra["objects"].get("detections", []) or []:
-                if d.get("class") == "person" and d.get("bbox"):
-                    person_bboxes.append(d["bbox"])
-        primaries = subject.primary_subjects(
-            subjects, rgb.shape,
-            salient_bbox=salient_bbox,
-            person_bboxes=person_bboxes or None,
-        )
-
         eye_report = face_expression.measure(rgb, faces=primaries)
-        aesthetic_score = aesthetic.score(rgb)
-        if "scene" in enabled:
-            try:
-                from .metrics import scene as _scene
-                extra["scene"] = _scene.analyze(rgb)
-            except Exception as e:  # pragma: no cover - opt-in
-                extra["scene_error"] = str(e)
-        # Content type (screenshot / document / photo) + OCR + animals via
-        # Apple Vision. OPT-IN: pass any of "content_type" / "ocr" / "vision"
-        # in the models list to enable. Vision OCR is the dominant per-image
-        # ML cost on photo libraries (~0.3-0.5s/image) and is wasted on the
-        # 99%+ of camera photos that are clearly not screenshots — so it's
-        # off by default. Enable per-library when OCR / screenshot-culling /
-        # text-in-scene search actually matters.
-        # Back-compat: "screendoc" is an alias for the old screendoc model.
-        # "no_content_type" remains an explicit kill-switch for the rare case
-        # where a caller wants to override an enabled-by-config setting.
-        from .metrics import vision as _vis
-        want_content = (
-            "no_content_type" not in enabled
-            and _vis.is_available()
-            and bool(enabled & {"content_type", "ocr", "vision", "screendoc"})
-        )
-        if want_content:
-            try:
-                # Camera-EXIF presence is the strongest content-type signal:
-                # screenshots/docs never carry a camera model. When present,
-                # we can skip the OCR + document-segmentation hop entirely
-                # (cheap photo-class fast path) — unless the caller explicitly
-                # asked for OCR text, in which case we still run it so the
-                # text-in-scene corpus is captured.
-                _ex_for_cam = exif_record if exif_record is not None else exif.read_exif(path)
-                has_camera = bool(_ex_for_cam.camera_model)
-                want_ocr_always = bool(enabled & {"ocr", "vision"})
-                if has_camera and not want_ocr_always:
-                    extra["ocr"] = []
-                    extra["content_type"] = {
-                        "class": "photo", "conf": 0.95, "source": "exif_fastpath",
-                        "has_camera": True,
-                    }
-                else:
-                    ocr_regions = _vis.recognize_text(rgb)
-                    extra["ocr"] = ocr_regions
-                    from .metrics import content_type as _ct
-                    extra["content_type"] = _ct.analyze(
-                        rgb, ocr_regions=ocr_regions, has_camera=has_camera,
-                    )
-                animals = _vis.recognize_animals(rgb)
-                if animals:
-                    extra["animals"] = animals
-            except Exception as e:  # pragma: no cover
-                extra["content_type_error"] = str(e)
+
+    aesthetic_score = aesthetic.score(rgb)
+    if "scene" in enabled:
+        try:
+            from .metrics import scene as _scene
+            extra["scene"] = _scene.analyze(rgb)
+        except Exception as e:  # pragma: no cover - opt-in
+            extra["scene_error"] = str(e)
+    # Content type (screenshot / document / photo) + OCR + animals via Apple
+    # Vision. OPT-IN: pass any of "content_type" / "ocr" / "vision" in the
+    # models list to enable. Vision OCR is the dominant per-image ML cost on
+    # photo libraries (~0.3-0.5s/image) and is wasted on the 99%+ of camera
+    # photos that are clearly not screenshots — so it's off by default.
+    # Back-compat: "screendoc" is an alias for the old screendoc model.
+    # "no_content_type" remains an explicit kill-switch.
+    from .metrics import vision as _vis
+    want_content = (
+        "no_content_type" not in enabled
+        and _vis.is_available()
+        and bool(enabled & {"content_type", "ocr", "vision", "screendoc"})
+    )
+    if want_content:
+        try:
+            # Camera-EXIF presence is the strongest content-type signal:
+            # screenshots/docs never carry a camera model. When present, we
+            # skip the OCR + document-segmentation hop entirely (cheap
+            # photo-class fast path) — unless the caller explicitly asked
+            # for OCR text.
+            _ex_for_cam = exif_record if exif_record is not None else exif.read_exif(path)
+            has_camera = bool(_ex_for_cam.camera_model)
+            want_ocr_always = bool(enabled & {"ocr", "vision"})
+            if has_camera and not want_ocr_always:
+                extra["ocr"] = []
+                extra["content_type"] = {
+                    "class": "photo", "conf": 0.95, "source": "exif_fastpath",
+                    "has_camera": True,
+                }
+            else:
+                ocr_regions = _vis.recognize_text(rgb)
+                extra["ocr"] = ocr_regions
+                from .metrics import content_type as _ct
+                extra["content_type"] = _ct.analyze(
+                    rgb, ocr_regions=ocr_regions, has_camera=has_camera,
+                )
+            animals = _vis.recognize_animals(rgb)
+            if animals:
+                extra["animals"] = animals
+        except Exception as e:  # pragma: no cover
+            extra["content_type_error"] = str(e)
     t_ml = time.perf_counter() - t_ml_start
 
     t_cv_start = time.perf_counter()

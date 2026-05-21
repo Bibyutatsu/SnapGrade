@@ -71,8 +71,19 @@ def _fit_long_edge(arr: np.ndarray, max_edge: int) -> np.ndarray:
 
 def _decode_pillow(path: Path, max_edge: int) -> tuple[np.ndarray, int, int]:
     with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im)
+        # libjpeg-turbo supports scaled DCT decode at 1/2, 1/4, 1/8 of native
+        # resolution. PIL's `draft` mode taps that path — much cheaper than
+        # decoding full-res then resizing. For a 6000-px JPEG with max_edge
+        # 2000 we get a ~3000-px decode for free, then a small LANCZOS resize.
+        # No-op for non-JPEGs (PIL silently ignores draft for HEIC/PNG/etc.)
+        # so the call is safe on every format.
         src_w, src_h = im.size
+        if max(src_w, src_h) > max_edge * 2:
+            try:
+                im.draft("RGB", (max_edge, max_edge))
+            except (AttributeError, ValueError):
+                pass
+        im = ImageOps.exif_transpose(im)
         im = im.convert("RGB")
         arr = np.asarray(im)
     return _fit_long_edge(arr, max_edge), src_w, src_h
