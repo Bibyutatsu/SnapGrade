@@ -413,6 +413,8 @@ function FacesScreen() {
   const [loading, setLoading]     = useState(true);
   const [running, setRunning]     = useState(false);
   const [runMsg, setRunMsg]       = useState('');
+  const [threshold, setThreshold] = useState(window.SG_PREFS?.faceThreshold ?? 0.30);
+  const [sortMode, setSortMode]   = useState('size_desc');  // size_desc | size_asc
   useEffect(() => { setExpanded(null); }, [activeLib]);
 
   const reload = useCallback(async () => {
@@ -444,12 +446,19 @@ function FacesScreen() {
 
   async function runClustering() {
     setRunMsg(''); setRunning(true);
-    try { await window.SG_API.runFaces(); }
+    try {
+      window.SG_API.savePrefs?.({ faceThreshold: threshold });
+      await window.SG_API.runFaces({ threshold });
+    }
     catch (e) { setRunning(false); setRunMsg(`launch failed: ${e.message}`); }
   }
 
-  const visibleClusters = clusters;  // /api/faces/clusters doesn't expose
-                                     // per-library mapping yet — show all.
+  const visibleClusters = useMemo(() => {
+    // /api/faces/clusters doesn't expose per-library mapping yet — show all.
+    const arr = [...clusters];
+    arr.sort((a, b) => sortMode === 'size_asc' ? a.count - b.count : b.count - a.count);
+    return arr;
+  }, [clusters, sortMode]);
 
   const libCounts = useMemo(() => {
     const counts = { all: visibleClusters.length };
@@ -462,14 +471,33 @@ function FacesScreen() {
   return (
     <div style={{ display:'flex', flex:1, minHeight:0, flexDirection:'column', overflow:'hidden' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
-      <div style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0 }}>
+      <div style={{ display:'flex', gap:14, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0, flexWrap:'wrap' }}>
         <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
           {clusters.length} cluster{clusters.length === 1 ? '' : 's'} · InsightFace + greedy/HNSW
         </span>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>Sort</span>
+          <button
+            onClick={() => setSortMode(s => s === 'size_desc' ? 'size_asc' : 'size_desc')}
+            style={{ fontSize:10, letterSpacing:'.18em', textTransform:'uppercase', padding:'4px 10px', border:'1px solid var(--c-border)', background:'var(--c-panel)', color:'var(--c-text)', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}
+            title="Toggle cluster sort order"
+          >
+            size {sortMode === 'size_desc' ? '↓' : '↑'}
+          </button>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>Threshold</span>
+          <input type="range" min={0.15} max={0.55} step={0.01} value={threshold}
+            onChange={e => setThreshold(parseFloat(e.target.value))}
+            disabled={running}
+            style={{ width:140, accentColor:'var(--c-accent)' }}
+            title="Cosine similarity threshold for clustering (lower = lumpier)" />
+          <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:16, color:'var(--c-accent)', minWidth:36, textAlign:'right' }}>{threshold.toFixed(2)}</span>
+        </div>
         <div style={{ flex:1 }} />
         {runMsg && <span className="sg-toast" style={{ marginTop:0 }}>{runMsg}</span>}
         <Btn variant="primary" disabled={running} onClick={runClustering}>
-          {running ? 'Clustering…' : 'Run face clustering'}
+          {running ? 'Clustering…' : 'Recluster'}
         </Btn>
       </div>
       <div className="sg-scroll">
@@ -478,11 +506,9 @@ function FacesScreen() {
           {!cluster ? (
             <>
               {loading ? (
-                <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>Loading clusters…</div>
+                <EmptyState>Loading clusters…</EmptyState>
               ) : visibleClusters.length === 0 ? (
-                <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>
-                  No face clusters yet — press "Run face clustering".
-                </div>
+                <EmptyState>No face clusters yet — press "Recluster".</EmptyState>
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:16, marginBottom:32 }}>
                   {visibleClusters.map(c => (
@@ -491,10 +517,15 @@ function FacesScreen() {
                       onMouseOver={e => { e.currentTarget.style.borderColor='var(--c-text2)'; e.currentTarget.style.transform='translateY(-2px)'; }}
                       onMouseOut={e  => { e.currentTarget.style.borderColor='var(--c-border)';  e.currentTarget.style.transform='none'; }}
                     >
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gridTemplateRows:'1fr 1fr', gap:1, height:160, background:'var(--c-border)', overflow:'hidden' }}>
-                        {c.thumbs.slice(0,4).map(t => (
-                          <img key={t.id} src={t.url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', filter:'saturate(0.85)', minWidth:0, minHeight:0 }} />
-                        ))}
+                      <div style={{ position:'relative', height:160, background:'var(--c-border)', overflow:'hidden' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gridTemplateRows:'1fr 1fr', gap:1, height:'100%' }}>
+                          {c.thumbs.slice(0,4).map(t => (
+                            <img key={t.id} src={t.url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', filter:'saturate(0.85)', minWidth:0, minHeight:0 }} />
+                          ))}
+                        </div>
+                        <div style={{ position:'absolute', top:8, left:8, padding:'3px 8px', background:'rgba(0,0,0,0.65)', color:'var(--c-accent)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:14, lineHeight:1, borderRadius:'var(--radius)', backdropFilter:'blur(2px)' }}>
+                          {c.count}
+                        </div>
                       </div>
                       <div style={{ padding:'12px 14px' }}>
                         <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:18, color:'var(--c-text)', marginBottom:4 }}>{c.label}</div>
@@ -608,7 +639,7 @@ function XMPExportScreen() {
       )}
       <div className="sg-scroll" style={{ flex:1 }}>
         {filtered.length === 0 ? (
-          <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>No frames match this filter</div>
+          <EmptyState>No frames match this filter</EmptyState>
         ) : (
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
@@ -830,6 +861,8 @@ function SettingsScreen() {
     w_sharpness: 0.50, w_exposure: 0.18, w_eyes: 0.14, w_composition: 0.08, w_aesthetic: 0.10,
   });
   const [reclassified, setReclassified] = useState(null);
+  const [reclassifyBusy, setReclassifyBusy] = useState(false);
+  const [regroupMsg, setRegroupMsg] = useState(null);
 
   const SLIDERS = [
     { key:'sharp_keeper',     label:'Sharp keeper threshold',  note:'Score ≥ this → keeper quality sharpness', min:0.3,  max:0.9, step:0.01 },
@@ -891,7 +924,9 @@ function SettingsScreen() {
             <h2 className="sg-card-h2" style={{ marginBottom:4 }}>Re<em>classify</em>.</h2>
             <div className="sg-card-sub" style={{ marginBottom:0 }}>Apply thresholds above to all non-overridden frames</div>
           </div>
-          <Btn variant="solid" onClick={async () => {
+          <Btn variant="solid" disabled={reclassifyBusy} onClick={async () => {
+            setReclassifyBusy(true);
+            setRegroupMsg(null);
             try {
               const payload = {
                 sharp_keeper: t.sharp_keeper,
@@ -902,13 +937,30 @@ function SettingsScreen() {
                 horizon_warn_deg: t.horizon_warn_deg,
               };
               const r = await window.SG_API.reclassify(payload);
-              setReclassified(r.updated ?? 0);
+              const updated = r.updated ?? 0;
+              setReclassified(updated);
+              if (updated > 0) {
+                setRegroupMsg('re-grouping bursts…');
+                try {
+                  await window.SG_API.regroup({ hamming: 10, seconds: 3 });
+                  setRegroupMsg('bursts re-grouped');
+                } catch (e) {
+                  setRegroupMsg(`bursts: regroup failed (${e.message}) — run manually`);
+                }
+              }
               window.SG_API.refresh().catch(()=>{});
-            } catch (e) { setReclassified(`failed: ${e.message}`); }
-          }}>Reclassify with these thresholds</Btn>
+            } catch (e) {
+              setReclassified(`failed: ${e.message}`);
+            } finally {
+              setReclassifyBusy(false);
+            }
+          }}>{reclassifyBusy ? 'Reclassifying…' : 'Reclassify with these thresholds'}</Btn>
         </div>
-        {reclassified && (
-          <div className="sg-toast">→ {reclassified} frames reclassified with new thresholds</div>
+        {reclassified !== null && (
+          <div className="sg-toast">
+            <div>→ {reclassified} frames reclassified with new thresholds</div>
+            {regroupMsg && <div style={{ marginTop:4 }}>↳ {regroupMsg}</div>}
+          </div>
         )}
 
         <FaceClusterSettings />

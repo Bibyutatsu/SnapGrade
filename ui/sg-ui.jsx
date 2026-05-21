@@ -27,6 +27,14 @@ const TAB_TITLES = {
 
 function pad(n, w = 3) { return String(n ?? 0).padStart(w, "0"); }
 
+function EmptyState({ children, padding = '60px 20px' }) {
+  return (
+    <div style={{ textAlign:'center', padding, color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>
+      {children}
+    </div>
+  );
+}
+
 function verdictColor(v) {
   if (v === 'keeper') return 'var(--c-keeper)';
   if (v === 'review') return 'var(--c-amber)';
@@ -649,7 +657,21 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
         {/* Reasons */}
         {m.reasons && m.reasons.length > 0 && (
           <div className="sg-reasons">
-            {m.reasons.join(' · ')}
+            {m.reasons.map((r, i) => {
+              const isClosedEyes = /eyes[_ ]?closed|closed[_ ]?eyes/i.test(r);
+              return (
+                <React.Fragment key={i}>
+                  {i > 0 && <span style={{ opacity:0.5 }}> · </span>}
+                  <span style={isClosedEyes ? { borderBottom:'1px dotted var(--c-amber)' } : null}>{r}</span>
+                  {isClosedEyes && (
+                    <span
+                      title="Eyes-closed detection uses landmark geometry only — hair, sunglasses, or other occlusion can cause false positives. Override the verdict if the eyes look open."
+                      style={{ marginLeft:4, padding:'1px 6px', borderRadius:'999px', border:'1px solid var(--c-amber)', color:'var(--c-amber)', fontSize:9, fontFamily:'var(--font-ui)', fontStyle:'normal', letterSpacing:'.1em', cursor:'help', verticalAlign:'1px' }}
+                    >?</span>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </div>
         )}
 
@@ -790,6 +812,6 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
 }
 
 Object.assign(window, {
-  TABS, TAB_TITLES, pad, verdictColor, Chip, Btn,
+  TABS, TAB_TITLES, pad, verdictColor, Chip, Btn, EmptyState,
   MetricTags, Sidebar, TopBar, DetailPanel, Lightbox,
 });
