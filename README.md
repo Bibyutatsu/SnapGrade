@@ -1,10 +1,23 @@
 # SnapGrade
 
-Local, privacy-respecting photo triage and organizer. Detects blur, out-of-focus subjects, closed eyes, exposure problems; groups bursts; organizes folders by EXIF + quality. Designed to run comfortably on a MacBook Air with 8 GB RAM — classical CV plus tiny purpose-built models, no large transformers.
+Local, privacy-respecting photo triage and organizer. Detects blur, out-of-focus subjects, closed eyes, exposure problems; groups bursts; clusters faces; searches by visual semantics; organizes folders by EXIF + quality. Designed to run comfortably on a MacBook Air with 8 GB RAM — classical CV plus tiny purpose-built models, no large transformers.
 
 ## Status
 
-Phase 1 (analyzer + CLI) in progress.
+Analyzer, CLI, and web UI (React) with real-time face clustering, burst regrouping, semantic search, and comprehensive image metrics.
+
+## Features
+
+- **Image Analysis**: blur detection (Laplacian, Tenengrad, FFT), exposure, noise, composition (horizon tilt, rule-of-thirds), subject sharpness
+- **Face Detection & Clustering**: MediaPipe + InsightFace embeddings for automatic face grouping with real-time progress UI
+- **Aesthetic & Quality Metrics**: HyperIQA-based scoring, depth estimation, image clipping detection, scene classification
+- **Semantic Search**: MobileCLIP embeddings for visual similarity search across library
+- **Burst Management**: Automatic grouping by perceptual hash, best-of-burst selection, interactive regrouping UI
+- **Event Clustering**: Time-gap clustering for organizing photos by shooting sessions
+- **Hierarchical Organization**: Customizable folder trees via EXIF + quality tokens
+- **XMP Export**: Ratings and labels compatible with Lightroom, darktable, Bridge
+- **Performance Profiling**: Built-in benchmarking with EXIF-based fast paths and deferred processing
+- **React Web UI**: Library browsing, interactive triage, face processing status, minute-level timeline filtering
 
 ---
 
@@ -58,11 +71,14 @@ You can also download each model on demand from the **Library tab** in the web U
 |---|---|---|---|
 | YuNet (ONNX) | Face detection | ~400 KB | **Auto** on first analyze |
 | MediaPipe FaceLandmarker | Blink / closed-eye (EAR) | ~2 MB | **Auto** on first analyze |
-| InsightFace `buffalo_s` | Face clustering | ~17 MB | **Auto** by InsightFace on first `faces` run |
+| InsightFace `buffalo_s` | Face clustering & embedding | ~17 MB | **Auto** by InsightFace on first `faces` run |
 | U²-Netp (ONNX) | Salient subject segmentation — picks the foreground subject in crowds, recovers hair/scarf-occluded subjects | ~4.5 MB | `setup` / UI button |
 | YOLOv8n (CoreML, baked-in NMS) | Object detection; feeds the subject picker via `person` bboxes | ~6 MB | `setup` / UI button |
-| NIMA (CoreML) | Aesthetic scoring | ~14 MB | `setup` / UI button |
+| HyperIQA (CoreML) | Enhanced aesthetic scoring with improved perceptual quality assessment | ~8 MB | `setup` / UI button |
+| MobileCLIP (ONNX) | Semantic embeddings for visual search and clustering | ~25 MB | `setup` / UI button |
 | Places365 (CoreML) | Scene classifier (adds `scene` organizer token) | ~20 MB | `setup` / UI button (pulls labels too) |
+| Subject segmentation (CoreML) | Foreground subject mask for precise framing analysis | ~4 MB | `setup` / UI button |
+| Depth estimation (CoreML) | Depth map for blur/focus analysis and 3D composition | ~6 MB | `setup` / UI button |
 | screendoc (CoreML) | Screenshot / document detection | ~3 MB | `setup` / UI button. Falls back to a palette/saturation heuristic when absent. |
 
 Weights are cached to `~/.snapgrade/models/`. Override the cache dir with `SNAPGRADE_MODELS_DIR`, or point at a fork/mirror of the model host with `SNAPGRADE_MODELS_REPO`.
@@ -203,9 +219,11 @@ uv run snapgrade show /path/to/photos
 # Write XMP sidecars (ratings/labels readable by Lightroom, darktable, Bridge)
 uv run snapgrade write-xmp /path/to/photos
 
-# Start the web UI + API
+# Start the web UI + API (recommended for interactive triage)
 uv run snapgrade serve
 # → http://127.0.0.1:8765
+#   Includes Library, Triage, Organization, and Settings screens
+#   with real-time face clustering, burst regrouping, and semantic search
 ```
 
 ---
@@ -214,16 +232,17 @@ uv run snapgrade serve
 
 | Command | Description |
 |---|---|
-| `analyze <folder>` | Recursively analyze, store results in `~/.snapgrade/library.db` |
+| `analyze <folder>` | Recursively analyze, compute metrics, store results in `~/.snapgrade/library.db` |
 | `show <folder>` | Re-print cached verdicts without re-analyzing |
 | `write-xmp <folder>` | Emit XMP sidecars with ratings and labels |
-| `group` | Group burst sequences by perceptual hash + timestamp |
+| `group` | Group burst sequences by perceptual hash + timestamp, pick best-of-burst |
 | `events` | Cluster images into time-gap events |
-| `faces` | Detect and cluster faces across the library (requires `insightface`) |
+| `faces` | Detect and cluster faces across the library; compute face embeddings (requires `insightface`) |
 | `organize` | Build a folder tree / symlink hierarchy from EXIF + quality tokens |
-| `tokens` | List all available organizer tokens |
-| `report` | Generate a static HTML contact-sheet report |
-| `serve` | Start the FastAPI backend + React UI on port 8765 |
+| `tokens` | List all available organizer tokens and their definitions |
+| `report` | Generate a static HTML contact-sheet report with embedded thumbnails |
+| `serve` | Start the FastAPI backend + React UI on port 8765; includes semantic search and real-time clustering |
+| `setup` | Download and verify all optional model weights |
 
 ---
 
@@ -235,6 +254,10 @@ uv run snapgrade serve
 | `SNAPGRADE_YOLO_MODEL` | `~/.snapgrade/models/yolov8n.onnx` | Custom YOLOv8n path |
 | `SNAPGRADE_U2NETP_MODEL` | `~/.snapgrade/models/u2netp.onnx` | Custom U²-Netp path |
 | `SNAPGRADE_NIMA_MODEL` | `~/.snapgrade/models/nima.mlpackage` (auto-detected) | Path to NIMA `.mlpackage` / `.mlmodelc`. If unset and the default file is missing, aesthetic scoring is skipped. |
+| `SNAPGRADE_HYPERIQА_MODEL` | `~/.snapgrade/models/hyperiqe.mlpackage` | Path to HyperIQA aesthetic scoring model |
+| `SNAPGRADE_MOBILECLIP_MODEL` | `~/.snapgrade/models/mobileclip.onnx` | Path to MobileCLIP semantic embedding model |
+| `SNAPGRADE_DEPTH_MODEL` | `~/.snapgrade/models/depth.mlpackage` | Path to depth estimation CoreML model |
+| `SNAPGRADE_SUBJECT_SEG_MODEL` | `~/.snapgrade/models/subject_seg.mlpackage` | Path to subject segmentation CoreML model |
 | `SNAPGRADE_SCENE_MODEL` | `~/.snapgrade/models/places365.mlpackage` | Custom Places365 path |
 | `SNAPGRADE_SCENE_LABELS` | `~/.snapgrade/models/places365_labels.txt` | Newline-separated Places365 class labels |
 | `SNAPGRADE_SCREENDOC_MODEL` | `~/.snapgrade/models/screendoc.mlpackage` | Custom screenshot/document head path |
@@ -245,7 +268,7 @@ The base install runs the analyzer with only YuNet + MediaPipe. Each optional mo
 
 | Model | Extra package | Install |
 |---|---|---|
-| U²-Netp, YOLOv8n (ONNX) | `onnxruntime` | `uv add onnxruntime` |
-| NIMA, Places365, screendoc (CoreML) | `coremltools` | `uv add coremltools` (already pulled in by the NIMA conversion step) |
+| U²-Netp, YOLOv8n, MobileCLIP (ONNX) | `onnxruntime` | `uv add onnxruntime` |
+| HyperIQA, Places365, screendoc, Depth, Subject seg (CoreML) | `coremltools` | `uv add coremltools` (already pulled in by the NIMA conversion step) |
 | InsightFace `buffalo_s` | `insightface` | `uv add insightface` |
 | YOLOv8n export from `.pt` | `ultralytics` | `uv add ultralytics` (one-time, for the conversion only) |
