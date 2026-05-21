@@ -121,8 +121,19 @@ function applyFilters(images, f) {
     if (f.date_from || f.date_to) {
       const t = img.capture_time ? Date.parse(img.capture_time) : NaN;
       if (isNaN(t)) return false;
-      if (f.date_from && t < Date.parse(f.date_from)) return false;
-      if (f.date_to   && t > Date.parse(f.date_to + 'T23:59:59')) return false;
+      // Day-only strings (YYYY-MM-DD) get midnight/end-of-day appended; longer
+      // strings (YYYY-MM-DDTHH:MM[:SS]) are parsed as-is. Keeps the scrubber's
+      // minute-level encoding compatible with the date-input fields.
+      if (f.date_from) {
+        const lo = f.date_from.length <= 10
+          ? Date.parse(f.date_from + 'T00:00:00') : Date.parse(f.date_from);
+        if (t < lo) return false;
+      }
+      if (f.date_to) {
+        const hi = f.date_to.length <= 10
+          ? Date.parse(f.date_to + 'T23:59:59') : Date.parse(f.date_to);
+        if (t > hi) return false;
+      }
     }
     if (f.text_search && !img.path.toLowerCase().includes(f.text_search.toLowerCase())) return false;
     if (f.burst_only && !img.burst_id) return false;
@@ -179,8 +190,8 @@ function buildActiveChips(f, upd) {
   if (f.reason_cast)     c.push({ id:'rcast', label:'colour cast',  clear: () => upd('reason_cast', false) });
   if (f.burst_only)      c.push({ id:'burst', label:'in burst',     clear: () => upd('burst_only', false) });
   if (f.burst_best)      c.push({ id:'best',  label:'best pick',    clear: () => upd('burst_best', false) });
-  if (f.date_from)       c.push({ id:'dfrom', label:`from ${f.date_from.slice(5)}`, clear: () => upd('date_from', '') });
-  if (f.date_to)         c.push({ id:'dto',   label:`to ${f.date_to.slice(5)}`,     clear: () => upd('date_to', '') });
+  if (f.date_from)       c.push({ id:'dfrom', label:`from ${f.date_from.slice(5).replace('T', ' ')}`, clear: () => upd('date_from', '') });
+  if (f.date_to)         c.push({ id:'dto',   label:`to ${f.date_to.slice(5).replace('T', ' ')}`,     clear: () => upd('date_to', '') });
   if (f.text_search)     c.push({ id:'txt',   label:`"${f.text_search}"`,           clear: () => upd('text_search', '') });
   return c;
 }
@@ -350,36 +361,23 @@ function Histogram({ values, threshold, onChange, label, accent = 'var(--c-keepe
 // Bins frames into a 60-cell histogram of capture_time; the two handles drive
 // date_from / date_to. Drag to the very edge to clear that bound.
 function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
-  // Refactored from scratch (Dec 2026) — uses Pointer Events with
-  // setPointerCapture so the drag never escapes the handle, no global window
-  // listeners and no stale closures. The bar's clientRect is read fresh on
-  // every pointermove. Handles can't cross each other (clamped via fresh
-  // refs of the current from/to percentages).
-
-  const trackRef    = useRef(null);
-  const fromPctRef  = useRef(0);
-  const toPctRef    = useRef(1);
+  const ref = useRef(null);
+  const dragRef = useRef(null);  // 'from' | 'to' | null
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  const BINS = 60;
-
-  // Sorted capture-time millis. Anything missing capture_time is dropped.
   const dated = useMemo(() => {
-    const out = [];
-    for (const i of images) {
-      if (!i.capture_time) continue;
-      const t = Date.parse(i.capture_time);
-      if (!isNaN(t)) out.push(t);
-    }
-    out.sort((a, b) => a - b);
-    return out;
+    return images
+      .map(i => i.capture_time ? new Date(i.capture_time).getTime() : NaN)
+      .filter(t => !isNaN(t))
+      .sort((a, b) => a - b);
   }, [images]);
 
   const minT = dated[0];
   const maxT = dated[dated.length - 1];
   const span = (maxT || 0) - (minT || 0);
 
+  const BINS = 60;
   const counts = useMemo(() => {
     const c = new Array(BINS).fill(0);
     if (!span) return c;
@@ -391,75 +389,67 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
   }, [dated, minT, span]);
   const maxCount = Math.max(1, ...counts);
 
-  // Below the early-return guard so it's safe to dereference minT/span.
+  // Sub-day-aware encoding: when the whole library spans less than two days,
+  // emit a full ISO datetime (minute-level) so dragging within a single day
+  // actually narrows the filter — the day-only "YYYY-MM-DD" encoding made the
+  // scrubber appear inert on same-day shoots. applyFilters parses via
+  // Date.parse, which handles both shapes.
+  const SUB_DAY = span < 2 * 24 * 3600 * 1000;
+  const tsToISO = (ts) => SUB_DAY
+    ? new Date(ts - new Date(ts).getTimezoneOffset() * 60000).toISOString().slice(0, 16)  // YYYY-MM-DDTHH:MM (local)
+    : new Date(ts).toISOString().slice(0, 10);                                              // YYYY-MM-DD (UTC date)
+  const parseBoundary = (s, isEndOfDay) => {
+    if (!s) return null;
+    if (s.length <= 10) return Date.parse(s + (isEndOfDay ? 'T23:59:59' : 'T00:00:00'));
+    return Date.parse(s);
+  };
+
+  const fromT = (dateFrom && parseBoundary(dateFrom, false)) || (minT || 0);
+  const toT   = (dateTo   && parseBoundary(dateTo,   true))  || (maxT || 0);
+  const fromPct = span ? Math.max(0, Math.min(1, (fromT - minT) / span)) : 0;
+  const toPct   = span ? Math.max(0, Math.min(1, (toT   - minT) / span)) : 1;
+
+  useEffect(() => {
+    function up() { dragRef.current = null; }
+    function move(e) {
+      if (!dragRef.current || !ref.current || !span) return;
+      const rect = ref.current.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const ts = minT + pct * span;
+      const iso = tsToISO(ts);
+      if (dragRef.current === 'from') {
+        onChangeRef.current({ from: pct < 0.01 ? '' : iso });
+      } else {
+        onChangeRef.current({ to:   pct > 0.99 ? '' : iso });
+      }
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+  }, [minT, span, SUB_DAY]);
+
   if (dated.length < 2 || !span) return null;
 
-  // Map between "YYYY-MM-DD" filter strings and absolute millis. Both sides go
-  // through Date.parse so the comparison in applyFilters matches exactly.
-  const fromT = dateFrom ? Date.parse(dateFrom) : minT;
-  const toT   = dateTo   ? Date.parse(dateTo + 'T23:59:59') : maxT;
-  const fromPct = Math.max(0, Math.min(1, (fromT - minT) / span));
-  const toPct   = Math.max(0, Math.min(1, (toT   - minT) / span));
-  fromPctRef.current = fromPct;
-  toPctRef.current   = toPct;
-
-  function pctFromEvent(e) {
-    const rect = trackRef.current.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  }
-  function emit(which, pct) {
+  function onBgMouseDown(e) {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const handle = Math.abs(pct - fromPct) <= Math.abs(pct - toPct) ? 'from' : 'to';
+    dragRef.current = handle;
     const ts = minT + pct * span;
-    const iso = new Date(ts).toISOString().slice(0, 10);
-    if (which === 'from') onChangeRef.current({ from: pct < 0.005 ? '' : iso });
-    else                  onChangeRef.current({ to:   pct > 0.995 ? '' : iso });
-  }
-  // Handler factory — returns the three pointer handlers for one handle.
-  function handleProps(which) {
-    return {
-      onPointerDown: e => {
-        e.stopPropagation();
-        e.currentTarget.setPointerCapture(e.pointerId);
-        e.currentTarget.dataset.drag = '1';
-      },
-      onPointerMove: e => {
-        if (e.currentTarget.dataset.drag !== '1') return;
-        const GAP = 0.01;
-        let pct = pctFromEvent(e);
-        if (which === 'from') pct = Math.min(pct, Math.max(0, toPctRef.current - GAP));
-        else                  pct = Math.max(pct, Math.min(1, fromPctRef.current + GAP));
-        emit(which, pct);
-      },
-      onPointerUp: e => {
-        delete e.currentTarget.dataset.drag;
-        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
-      },
-      onPointerCancel: e => { delete e.currentTarget.dataset.drag; },
-    };
+    const iso = tsToISO(ts);
+    if (handle === 'from') onChange({ from: pct < 0.01 ? '' : iso });
+    else                    onChange({ to:   pct > 0.99 ? '' : iso });
   }
 
-  // Background click — only acts on clicks outside the selected band (in the
-  // band itself, we route through the handles so the closer-handle picker
-  // doesn't surprise the user).
-  function onTrackPointerDown(e) {
-    const pct = pctFromEvent(e);
-    if (pct > fromPct + 0.02 && pct < toPct - 0.02) return;
-    const which = Math.abs(pct - fromPct) <= Math.abs(pct - toPct) ? 'from' : 'to';
-    emit(which, pct);
-  }
-
-  const fmt = ts => new Date(ts).toLocaleDateString('en-GB',
-    { day: '2-digit', month: 'short', year: '2-digit' });
+  // Label format adapts to scale: day+time on short ranges, day-only otherwise.
+  const fmt = ts => new Date(ts).toLocaleString('en-GB', SUB_DAY
+    ? { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }
+    : { day: '2-digit', month: 'short', year: '2-digit' });
   const filterActive = !!(dateFrom || dateTo);
-
-  const handleBaseStyle = {
-    position: 'absolute', top: -5, bottom: -5,
-    width: 14, marginLeft: -7,
-    background: 'var(--c-accent)', borderRadius: 3,
-    border: '2px solid var(--c-bg)',
-    cursor: 'ew-resize', zIndex: 3,
-    boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
-    touchAction: 'none',
-  };
 
   return (
     <div style={{ padding:'8px 18px 6px', borderBottom:'1px solid var(--c-border)',
@@ -470,10 +460,10 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
                     fontFamily:'var(--font-ui)', flexShrink:0, width:70 }}>Timeline</div>
 
       <div style={{ flex:1, position:'relative' }}>
-        <div ref={trackRef} onPointerDown={onTrackPointerDown}
+        <div ref={ref} onMouseDown={onBgMouseDown}
           style={{ position:'relative', height:36, cursor:'col-resize', userSelect:'none',
                    background:'var(--c-bg)', border:'1px solid var(--c-border)',
-                   borderRadius:'var(--radius)', touchAction:'none' }}
+                   borderRadius:'var(--radius)' }}
         >
           {counts.map((c, i) => {
             const binCenter = (i + 0.5) / BINS;
@@ -495,10 +485,30 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
           })}
           {/* Selection band */}
           <div style={{ position:'absolute', top:0, bottom:0,
-                        left:`${fromPct * 100}%`, width:`${Math.max(0, toPct - fromPct) * 100}%`,
-                        background:'rgba(193,68,14,0.10)', pointerEvents:'none' }}/>
-          <div {...handleProps('from')} style={{ ...handleBaseStyle, left:`${fromPct * 100}%` }} />
-          <div {...handleProps('to')}   style={{ ...handleBaseStyle, left:`${toPct * 100}%` }} />
+                        left:`${fromPct * 100}%`, width:`${(toPct - fromPct) * 100}%`,
+                        background:'rgba(193,68,14,0.08)', pointerEvents:'none' }}/>
+          {/* From handle — 28px transparent hit zone wraps a 10px visible bar */}
+          <div onMouseDown={e => { e.stopPropagation(); dragRef.current = 'from'; }}
+            style={{ position:'absolute', top:-8, bottom:-8,
+                     left:`${fromPct * 100}%`, width:28, transform:'translateX(-50%)',
+                     cursor:'ew-resize', zIndex:3, background:'transparent',
+                     display:'flex', alignItems:'stretch', justifyContent:'center' }}>
+            <div style={{ width:10, background:'var(--c-accent)',
+                          borderRadius:2, border:'1.5px solid var(--c-bg)',
+                          boxShadow:'0 1px 3px rgba(0,0,0,0.4)',
+                          pointerEvents:'none' }}/>
+          </div>
+          {/* To handle */}
+          <div onMouseDown={e => { e.stopPropagation(); dragRef.current = 'to'; }}
+            style={{ position:'absolute', top:-8, bottom:-8,
+                     left:`${toPct * 100}%`, width:28, transform:'translateX(-50%)',
+                     cursor:'ew-resize', zIndex:3, background:'transparent',
+                     display:'flex', alignItems:'stretch', justifyContent:'center' }}>
+            <div style={{ width:10, background:'var(--c-accent)',
+                          borderRadius:2, border:'1.5px solid var(--c-bg)',
+                          boxShadow:'0 1px 3px rgba(0,0,0,0.4)',
+                          pointerEvents:'none' }}/>
+          </div>
         </div>
         <div style={{ display:'flex', justifyContent:'space-between',
                       fontSize:8, letterSpacing:'0.18em', textTransform:'uppercase',
