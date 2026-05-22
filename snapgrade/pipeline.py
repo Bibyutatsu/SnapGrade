@@ -11,6 +11,12 @@ Per-image phases:
 A single threading.Lock serializes the ML phase. With a moderate number of
 workers (4–8), the parallel phase fills the time the ML phase would otherwise
 sit idle, giving ~2× wall-clock speedup on the M1 Air.
+
+Note: under SNAPGRADE_USE_PROCESSES=1 the pool is a ProcessPoolExecutor, so
+each worker gets its *own* copy of `_ML_LOCK` — the lock only serializes within
+a process. That's still safe because each process initializes its own
+FaceLandmarker; the cross-thread reentrancy crash the lock guards against can't
+occur across processes.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -58,11 +64,29 @@ def walk_images(root: Path) -> Iterator[Path]:
             yield p
 
 
-def _content_hash(path: Path, chunk: int = 1 << 20) -> str:
+_HASH_VERSION = "v2"
+_HASH_EDGE = 1 << 16  # 64 KiB sampled from head and tail
+
+
+def _content_hash(path: Path) -> str:
+    """Content-identity key: file size + leading 64 KiB + trailing 64 KiB.
+
+    Hashing only the first 1 MB (the old v1 scheme) collided for files that
+    share a container header — same camera / encoder produce identical leading
+    bytes — which let the library-reconcile path rebind a row to the wrong
+    file. Folding in the size and both edges makes distinct files diverge. The
+    `v2:` prefix versions the format so a legacy 1 MB digest can never compare
+    equal to a new one (a mismatch only declines a heal — it never mis-binds).
+    """
     h = hashlib.sha1()
+    size = path.stat().st_size
+    h.update(str(size).encode())
     with path.open("rb") as f:
-        h.update(f.read(chunk))
-    return h.hexdigest()
+        h.update(f.read(_HASH_EDGE))
+        if size > _HASH_EDGE:
+            f.seek(max(size - _HASH_EDGE, _HASH_EDGE))
+            h.update(f.read(_HASH_EDGE))
+    return f"{_HASH_VERSION}:{h.hexdigest()}"
 
 
 def _dc_to_dict(obj: Any) -> Any:
@@ -318,7 +342,7 @@ def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtim
         "gps_lon": ex.gps_lon,
         "phash": result.metrics["hashes"]["phash"],
         "dhash": result.metrics["hashes"]["dhash"],
-        "analyzed_at": datetime.utcnow().isoformat(),
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
     }
     image_id = db.upsert_image(conn, fields)
     db.save_metrics(conn, image_id, result.metrics)

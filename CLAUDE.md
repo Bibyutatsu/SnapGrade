@@ -20,7 +20,7 @@ Single source of truth: `~/.snapgrade/library.db` (SQLite, WAL). Files on disk a
 | EXIF extraction (time, camera, lens, GPS, flash) | [snapgrade/exif.py](snapgrade/exif.py) | Pillow + GPSInfo parsing, rawpy fallback. |
 | Sharpness (Laplacian + Tenengrad + FFT anisotropy) | [snapgrade/metrics/sharpness.py](snapgrade/metrics/sharpness.py) | Optional bbox restricts to subject. |
 | Subject detection (MediaPipe face + saliency fallback) | [snapgrade/metrics/subject.py](snapgrade/metrics/subject.py) | First subject = primary, drives subject-aware sharpness. |
-| Blink / closed-eye (FaceMesh + EAR) | [snapgrade/metrics/eyes.py](snapgrade/metrics/eyes.py) | `CLOSED_THRESHOLD = 0.20`. |
+| Blink / closed-eye + expression (FaceLandmarker blendshapes + EAR) | [snapgrade/metrics/face_expression.py](snapgrade/metrics/face_expression.py) | `CLOSED_EAR_THRESHOLD = 0.20`. |
 | Exposure (histogram, clipping, dynamic range) | [snapgrade/metrics/exposure.py](snapgrade/metrics/exposure.py) | Flags under/over-exposed. |
 | Noise σ (Immerkær) | [snapgrade/metrics/noise.py](snapgrade/metrics/noise.py) | Single fast kernel. |
 | Composition (horizon tilt, rule-of-thirds offset) | [snapgrade/metrics/composition.py](snapgrade/metrics/composition.py) | Hough lines + bbox geometry. |

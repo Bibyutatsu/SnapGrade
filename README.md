@@ -254,7 +254,7 @@ uv run snapgrade serve
 | `SNAPGRADE_YOLO_MODEL` | `~/.snapgrade/models/yolov8n.onnx` | Custom YOLOv8n path |
 | `SNAPGRADE_U2NETP_MODEL` | `~/.snapgrade/models/u2netp.onnx` | Custom U²-Netp path |
 | `SNAPGRADE_NIMA_MODEL` | `~/.snapgrade/models/nima.mlpackage` (auto-detected) | Path to NIMA `.mlpackage` / `.mlmodelc`. If unset and the default file is missing, aesthetic scoring is skipped. |
-| `SNAPGRADE_HYPERIQА_MODEL` | `~/.snapgrade/models/hyperiqe.mlpackage` | Path to HyperIQA aesthetic scoring model |
+| `SNAPGRADE_HYPERIQA_MODEL` | `~/.snapgrade/models/hyperiqa.mlpackage` | Path to HyperIQA aesthetic scoring model |
 | `SNAPGRADE_MOBILECLIP_MODEL` | `~/.snapgrade/models/mobileclip.onnx` | Path to MobileCLIP semantic embedding model |
 | `SNAPGRADE_DEPTH_MODEL` | `~/.snapgrade/models/depth.mlpackage` | Path to depth estimation CoreML model |
 | `SNAPGRADE_SUBJECT_SEG_MODEL` | `~/.snapgrade/models/subject_seg.mlpackage` | Path to subject segmentation CoreML model |

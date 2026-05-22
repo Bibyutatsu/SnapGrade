@@ -85,6 +85,48 @@ def encode_text(query: str) -> np.ndarray | None:
         return None
 
 
+# Per-scope cache of the stacked embedding matrix. Rebuilding it (SQL + np.stack
+# of a 100k×512 float32 = 200 MB array) on every keystroke of a search-as-you-type
+# UI is wasteful, so we memoize keyed on a cheap (count, max_image_id) signature
+# and rebuild only when the embedding set changes. {library_id: (sig, mat, ids)}.
+_MAT_CACHE: dict[int | None, tuple[tuple[int, int], np.ndarray, np.ndarray]] = {}
+
+
+def _embedding_matrix(
+    conn: sqlite3.Connection, library_id: int | None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return (matrix, ids) for the scope, served from cache when unchanged."""
+    if library_id is None:
+        sig_row = conn.execute(
+            "SELECT COUNT(*) AS c, MAX(image_id) AS m FROM image_embeddings"
+        ).fetchone()
+    else:
+        sig_row = conn.execute(
+            "SELECT COUNT(*) AS c, MAX(e.image_id) AS m FROM image_embeddings e "
+            "JOIN images i ON i.id = e.image_id WHERE i.library_id = ?",
+            (library_id,),
+        ).fetchone()
+    sig = (int(sig_row["c"] or 0), int(sig_row["m"] or 0))
+    if sig[0] == 0:
+        return None, None
+    cached = _MAT_CACHE.get(library_id)
+    if cached is not None and cached[0] == sig:
+        return cached[1], cached[2]
+
+    sql = "SELECT e.image_id, e.embedding FROM image_embeddings e"
+    params: list = []
+    if library_id is not None:
+        sql += " JOIN images i ON i.id = e.image_id WHERE i.library_id = ?"
+        params.append(library_id)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return None, None
+    ids = np.fromiter((int(r["image_id"]) for r in rows), dtype=np.int64, count=len(rows))
+    mat = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+    _MAT_CACHE[library_id] = (sig, mat, ids)
+    return mat, ids
+
+
 def search(
     conn: sqlite3.Connection, query: str, k: int = 20, library_id: int | None = None,
 ) -> list[tuple[int, float]]:
@@ -95,16 +137,9 @@ def search(
     qvec = encode_text(query)
     if qvec is None:
         return []
-    sql = "SELECT e.image_id, e.embedding FROM image_embeddings e"
-    params: list = []
-    if library_id is not None:
-        sql += " JOIN images i ON i.id = e.image_id WHERE i.library_id = ?"
-        params.append(library_id)
-    rows = conn.execute(sql, params).fetchall()
-    if not rows:
+    mat, ids = _embedding_matrix(conn, library_id)
+    if mat is None:
         return []
-    ids = np.fromiter((int(r["image_id"]) for r in rows), dtype=np.int64, count=len(rows))
-    mat = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
     # Embeddings are pre-normalized so this is true cosine similarity.
     sims = mat @ qvec
     k = min(k, len(sims))

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -32,12 +34,50 @@ FACES_STATE: dict[str, Any] = {
 
 app = FastAPI(title="SnapGrade", version="0.1.0")
 
+# Loopback-only app: the only legitimate caller is the same-origin UI. Pinning
+# CORS to the local origins (instead of "*") means a browser will refuse the
+# preflight for any cross-site request, and `require_local` below forces every
+# mutating route to *be* a preflighted request. Together they shut the door on a
+# malicious page silently driving destructive ops (organize move, ingest) against
+# 127.0.0.1 — without needing real auth for a single-user local tool.
+_LOCAL_ORIGINS = [
+    f"http://{host}:{port}"
+    for host in ("127.0.0.1", "localhost")
+    for port in ("8765",)
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_LOCAL_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_local(x_snapgrade: str | None = Header(default=None)) -> None:
+    """CSRF guard for state-changing endpoints.
+
+    Requiring a custom header makes the request "non-simple", so the browser
+    must preflight it; the locked-down CORS origin list then rejects any
+    cross-site preflight. The UI sends this header on every mutation (see
+    sg-data.js); a third-party page cannot.
+    """
+    if not x_snapgrade:
+        raise HTTPException(403, "missing X-SnapGrade header (CSRF guard)")
+
+
+# Serializes the single DB-writing background slot. ingest / sync / run_models /
+# faces each open their own SQLite connection; running two at once trips
+# "database is locked" under WAL. The lock also makes the check-and-claim atomic
+# so two near-simultaneous POSTs can't both pass the running guard.
+_TASK_LOCK = threading.Lock()
+
+
+def _claim_db_task(state: dict[str, Any]) -> None:
+    """Atomically reserve the DB-writing background slot, or raise 409."""
+    with _TASK_LOCK:
+        if INGEST_STATE["running"] or FACES_STATE["running"]:
+            raise HTTPException(409, "a background task is already running")
+        state["running"] = True
 
 
 def _conn() -> sqlite3.Connection:
@@ -82,9 +122,13 @@ def stats() -> dict[str, Any]:
     }
 
 
-@app.post("/api/select_folder")
-def select_folder() -> dict[str, str | None]:
-    """macOS folder picker; AppleScript is forced to the front via System Events."""
+@app.post("/api/select_folder", dependencies=[Depends(require_local)])
+async def select_folder() -> dict[str, str | None]:
+    """macOS folder picker; AppleScript is forced to the front via System Events.
+
+    The dialog blocks until the user picks (potentially tens of seconds), so it
+    runs in a threadpool rather than tying up the event loop / a worker.
+    """
     import subprocess
     script = (
         'tell application "System Events" to activate\n'
@@ -95,16 +139,20 @@ def select_folder() -> dict[str, str | None]:
         '  return ""\n'
         'end try'
     )
-    try:
-        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
-        path = res.stdout.strip()
-        return {"path": path or None}
-    except subprocess.CalledProcessError:
-        return {"path": None}
-    except FileNotFoundError:
-        raise HTTPException(501, "Folder picker requires macOS (osascript)")
-    except Exception as e:
-        raise HTTPException(500, f"Failed to run dialog: {e}")
+
+    def _run_dialog() -> dict[str, str | None]:
+        try:
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+            path = res.stdout.strip()
+            return {"path": path or None}
+        except subprocess.CalledProcessError:
+            return {"path": None}
+        except FileNotFoundError:
+            raise HTTPException(501, "Folder picker requires macOS (osascript)")
+        except Exception as e:
+            raise HTTPException(500, f"Failed to run dialog: {e}")
+
+    return await run_in_threadpool(_run_dialog)
 
 
 @app.get("/api/libraries")
@@ -114,40 +162,31 @@ def list_libraries_endpoint() -> dict[str, Any]:
     return {"items": items, "available_models": _available_models()}
 
 
-@app.post("/api/libraries/{library_id}/sync")
-def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]:
-    """Reconcile a library with disk: add new files, drop missing files, re-run the
-    same model set that was previously applied to the library."""
-    conn = _conn()
-    row = conn.execute(
-        "SELECT root_path, models_run FROM libraries WHERE id=?", (library_id,)
-    ).fetchone()
-    if not row:
-        raise HTTPException(404, "library not found")
-    if INGEST_STATE["running"]:
-        raise HTTPException(409, "ingest already running")
-    root = Path(row["root_path"])
-    if not root.is_dir():
-        raise HTTPException(410, f"library root no longer exists: {root}")
-    models_run = json.loads(row["models_run"] or "{}")
-    model_list = list(models_run.keys())
+def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) -> tuple[int, int]:
+    """Reconcile DB paths with disk, in a single transaction. Returns (removed, rehoused).
 
-    # Reconcile DB paths with disk:
-    #  (a) if a file with the same content_hash is found under the root at a
-    #      new path, update the row in place (recovers from a prior "move"
-    #      organize that didn't propagate the rename to the DB).
-    #  (b) otherwise drop rows whose path is gone.
+      (a) if a file with the same content_hash is found under the root at a new
+          path, update the row in place (recovers from a prior "move" organize
+          that didn't propagate the rename to the DB).
+      (b) otherwise drop rows whose path is gone.
+
+    The content-hash sweep can be expensive, so this runs on the background task
+    thread — never a request handler — and the mutations are wrapped so a crash
+    can't leave a half-pruned library.
+    """
     existing = {str(p) for p in pipeline.walk_images(root)}
     catalogued = conn.execute(
         "SELECT id, path, content_hash FROM images WHERE library_id=?", (library_id,)
     ).fetchall()
-    # Build an index of disk files by content_hash (only those rows that are
-    # missing — avoid hashing the whole tree unnecessarily).
     missing = [r for r in catalogued if r["path"] not in existing]
+    if not missing:
+        return 0, 0
+
     rehoused = 0
-    if missing:
-        catalogued_paths = {r["path"] for r in catalogued}
-        unknown_disk = [p for p in existing if p not in catalogued_paths]
+    rehoused_ids: set[int] = set()
+    catalogued_paths = {r["path"] for r in catalogued}
+    unknown_disk = [p for p in existing if p not in catalogued_paths]
+    with db.transaction(conn):
         if unknown_disk:
             disk_by_hash: dict[str, str] = {}
             for p in unknown_disk:
@@ -160,24 +199,40 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
                 if h and h in disk_by_hash:
                     conn.execute("UPDATE images SET path=? WHERE id=?", (disk_by_hash[h], int(r["id"])))
                     rehoused += 1
-        # Re-evaluate which rows are still missing after rehousing.
-        still_missing = [
-            int(r["id"]) for r in catalogued
-            if r["path"] not in existing
-            and conn.execute("SELECT path FROM images WHERE id=?", (int(r["id"]),)).fetchone()["path"] not in existing
-        ]
+                    rehoused_ids.add(int(r["id"]))
+        still_missing = [int(r["id"]) for r in missing if int(r["id"]) not in rehoused_ids]
         if still_missing:
             placeholders = ",".join("?" for _ in still_missing)
             conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", still_missing)
-            db.cleanup_orphan_bursts(conn)
-        to_drop = still_missing
-    else:
-        to_drop = []
+    if still_missing:
+        db.cleanup_orphan_bursts(conn)
+    return len(still_missing), rehoused
+
+
+@app.post("/api/libraries/{library_id}/sync", dependencies=[Depends(require_local)])
+def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]:
+    """Reconcile a library with disk, then re-run the same model set, in background."""
+    conn = _conn()
+    row = conn.execute(
+        "SELECT root_path, models_run FROM libraries WHERE id=?", (library_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "library not found")
+    root = Path(row["root_path"])
+    if not root.is_dir():
+        raise HTTPException(410, f"library root no longer exists: {root}")
+    model_list = list(json.loads(row["models_run"] or "{}").keys())
+    _claim_db_task(INGEST_STATE)
 
     def _run() -> None:
-        total = _count_supported_files(root)
-        INGEST_STATE.update(running=True, folder=str(root), done=0, total=total, error=None)
+        INGEST_STATE.update(
+            running=True, folder=str(root), done=0, total=None, error=None,
+            removed=0, rehoused=0,
+        )
         try:
+            bg_conn = _conn()
+            removed, rehoused = _reconcile_library(bg_conn, library_id, root)
+            INGEST_STATE.update(removed=removed, rehoused=rehoused, total=_count_supported_files(root))
             for _ in pipeline.analyze_folder(root, models=model_list, library_id=library_id):
                 INGEST_STATE["done"] += 1
         except Exception as e:
@@ -186,10 +241,10 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
             INGEST_STATE["running"] = False
 
     background.add_task(_run)
-    return {"started": True, "removed": len(to_drop), "rehoused": rehoused, "models": model_list}
+    return {"started": True, "models": model_list}
 
 
-@app.delete("/api/libraries/{library_id}")
+@app.delete("/api/libraries/{library_id}", dependencies=[Depends(require_local)])
 def remove_library(library_id: int) -> dict[str, Any]:
     conn = _conn()
     counts = db.delete_library(conn, library_id)
@@ -200,17 +255,16 @@ class RunModelsRequest(BaseModel):
     models: list[str]
 
 
-@app.post("/api/libraries/{library_id}/run_models")
+@app.post("/api/libraries/{library_id}/run_models", dependencies=[Depends(require_local)])
 def run_library_models(library_id: int, req: RunModelsRequest, background: BackgroundTasks) -> dict[str, Any]:
     conn = _conn()
     row = conn.execute("SELECT root_path FROM libraries WHERE id=?", (library_id,)).fetchone()
     if not row:
         raise HTTPException(404, "library not found")
-    if INGEST_STATE["running"]:
-        raise HTTPException(409, "ingest already running")
     root = Path(row["root_path"])
     models = [m for m in req.models if m in _AVAILABLE_MODEL_NAMES]
 
+    _claim_db_task(INGEST_STATE)
     db.set_library_models(conn, library_id, models_pending=models)
 
     def _run() -> None:
@@ -219,9 +273,9 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
         try:
             for _ in pipeline.analyze_folder(root, models=models, library_id=library_id, force=True):
                 INGEST_STATE["done"] += 1
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz
             bg_conn = _conn()
-            now = _dt.utcnow().isoformat()
+            now = _dt.now(_tz.utc).isoformat()
             db.set_library_models(
                 bg_conn, library_id,
                 models_run={m: now for m in models},
@@ -278,7 +332,7 @@ def list_available_models() -> dict[str, Any]:
     return {"models": out, "download_state": DOWNLOAD_STATE}
 
 
-@app.post("/api/models/{name}/download")
+@app.post("/api/models/{name}/download", dependencies=[Depends(require_local)])
 def download_model(name: str, background: BackgroundTasks, url: str | None = Query(None)) -> dict[str, Any]:
     if name not in _AVAILABLE_MODEL_NAMES:
         raise HTTPException(404, f"unknown model: {name}")
@@ -291,8 +345,12 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
             f"No public URL is registered for '{name}'. Pass ?url=... to specify one, "
             f"or drop the weights at ~/.snapgrade/models/{filename} manually.",
         )
-    if DOWNLOAD_STATE["running"]:
-        raise HTTPException(409, "another model download is in progress")
+    # No DB writes here (file download only), so it may run alongside an ingest;
+    # claim the download flag synchronously so two POSTs can't both pass.
+    with _TASK_LOCK:
+        if DOWNLOAD_STATE["running"]:
+            raise HTTPException(409, "another model download is in progress")
+        DOWNLOAD_STATE["running"] = True
     dest = Path.home() / ".snapgrade" / "models" / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -517,47 +575,31 @@ def get_image(image_id: int) -> dict[str, Any]:
     return out
 
 
-def _resolve_or_heal(conn: sqlite3.Connection, image_id: int) -> tuple[Path, str | None] | None:
-    """Return (path, content_hash) for an image, healing a drifted path.
+def _resolve_image_path(conn: sqlite3.Connection, image_id: int) -> tuple[Path, str | None] | None:
+    """Return (path, content_hash) for an image, or None if the file is gone.
 
-    If the stored path is gone (e.g. files moved on disk by an external tool),
-    search the owning library's root for a file whose content_hash matches,
-    rebind the DB path, and return it. Bounded by library size; best-effort.
+    Deliberately cheap: a single stat. Earlier this walked the whole library
+    and content-hashed every file to "heal" a drifted path — on a request
+    thread, for every thumbnail of a moved file, that pegged the CPU. Path
+    healing now lives in the background reconcile (`_reconcile_library`, run by
+    POST /libraries/{id}/sync), so a missing file just returns 410 here and the
+    user re-syncs to rebind.
     """
     row = conn.execute(
-        "SELECT path, content_hash, library_id FROM images WHERE id = ?", (image_id,)
+        "SELECT path, content_hash FROM images WHERE id = ?", (image_id,)
     ).fetchone()
     if not row:
         return None
     path = Path(row["path"])
     if path.exists():
         return path, row["content_hash"]
-    chash = row["content_hash"]
-    lib = conn.execute(
-        "SELECT root_path FROM libraries WHERE id = ?", (row["library_id"],)
-    ).fetchone() if row["library_id"] is not None else None
-    if not lib or not chash:
-        return None
-    root = Path(lib["root_path"])
-    if not root.is_dir():
-        return None
-    try:
-        for cand in pipeline.walk_images(root):
-            try:
-                if pipeline._content_hash(cand) == chash:
-                    conn.execute("UPDATE images SET path=? WHERE id=?", (str(cand), image_id))
-                    return cand, chash
-            except Exception:
-                continue
-    except Exception:
-        return None
     return None
 
 
 @app.get("/api/images/{image_id}/thumb")
 def get_thumb(image_id: int, size: int = Query(512, ge=64, le=2048)) -> Response:
     conn = _conn()
-    resolved = _resolve_or_heal(conn, image_id)
+    resolved = _resolve_image_path(conn, image_id)
     if resolved is None:
         # Distinguish "no such image" from "file genuinely gone".
         exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
@@ -570,7 +612,7 @@ def get_thumb(image_id: int, size: int = Query(512, ge=64, le=2048)) -> Response
 @app.get("/api/images/{image_id}/preview")
 def get_preview(image_id: int) -> Response:
     conn = _conn()
-    resolved = _resolve_or_heal(conn, image_id)
+    resolved = _resolve_image_path(conn, image_id)
     if resolved is None:
         exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
         raise HTTPException(410 if exists else 404, "source file missing")
@@ -585,7 +627,7 @@ class VerdictUpdate(BaseModel):
     label: str | None = None
 
 
-@app.post("/api/images/{image_id}/verdict")
+@app.post("/api/images/{image_id}/verdict", dependencies=[Depends(require_local)])
 def update_verdict(image_id: int, payload: VerdictUpdate) -> dict[str, Any]:
     conn = _conn()
     row = conn.execute(
@@ -612,7 +654,7 @@ def _count_supported_files(root: Path) -> int:
     return n
 
 
-@app.post("/api/ingest")
+@app.post("/api/ingest", dependencies=[Depends(require_local)])
 def ingest(
     background: BackgroundTasks,
     folder: str = Query("", description="Folder path to ingest (required, non-empty)"),
@@ -623,10 +665,9 @@ def ingest(
     folder_path = Path(folder.strip()).expanduser().resolve()
     if not folder_path.is_dir():
         raise HTTPException(400, "folder does not exist")
-    if INGEST_STATE["running"]:
-        raise HTTPException(409, "ingest already running")
     model_list = [m.strip() for m in models.split(",") if m.strip() in _AVAILABLE_MODEL_NAMES]
 
+    _claim_db_task(INGEST_STATE)
     conn = _conn()
     library_id = db.ensure_library(conn, str(folder_path))
     if model_list:
@@ -639,9 +680,9 @@ def ingest(
             for _ in pipeline.analyze_folder(folder_path, models=model_list, library_id=library_id):
                 INGEST_STATE["done"] += 1
             if model_list:
-                from datetime import datetime as _dt
+                from datetime import datetime as _dt, timezone as _tz
                 bg_conn = _conn()
-                now = _dt.utcnow().isoformat()
+                now = _dt.now(_tz.utc).isoformat()
                 db.set_library_models(
                     bg_conn, library_id,
                     models_run={m: now for m in model_list},
@@ -656,7 +697,7 @@ def ingest(
     return {"started": True, "folder": str(folder_path), "library_id": library_id, "models": model_list}
 
 
-@app.post("/api/group")
+@app.post("/api/group", dependencies=[Depends(require_local)])
 def regroup(hamming: int = 10, seconds: int = 3, library_id: int | None = Query(None)) -> dict[str, Any]:
     conn = _conn()
     bursts = group.group_bursts(
@@ -695,17 +736,17 @@ def get_burst(burst_id: int) -> dict[str, Any]:
     return list_images(burst=burst_id, limit=200)
 
 
-@app.post("/api/faces/run")
+@app.post("/api/faces/run", dependencies=[Depends(require_local)])
 def faces_run(
     background: BackgroundTasks,
     incremental: bool = Query(False),
-    threshold: float = Query(0.30, ge=0.0, le=1.0),
+    threshold: float | None = Query(None, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     """Detect faces (InsightFace) and cluster them (greedy/HNSW), in background.
-    Status reported via /api/stats.faces."""
-    if FACES_STATE["running"]:
-        raise HTTPException(409, "face clustering already running")
+    Status reported via /api/stats.faces. Threshold defaults to FaceClusterConfig."""
     from . import face_cluster
+
+    _claim_db_task(FACES_STATE)
 
     def _run() -> None:
         FACES_STATE.update(
@@ -719,7 +760,11 @@ def faces_run(
 
         try:
             conn = _conn()
-            cfg = face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+            cfg = (
+                face_cluster.FaceClusterConfig()
+                if threshold is None
+                else face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+            )
             FACES_STATE["detected"] = face_cluster.detect_and_store(conn, cfg, progress_cb=_on_progress)
             FACES_STATE["stage"] = "cluster"
             # Clustering itself is fast and atomic — flip to indeterminate.
@@ -824,7 +869,7 @@ class OrganizeRequest(BaseModel):
     confirm: str | None = None  # required when in_place=True with apply=True
 
 
-@app.post("/api/organize")
+@app.post("/api/organize", dependencies=[Depends(require_local)])
 def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
     conn = _conn()
     paths: list[str] | None = None
@@ -883,7 +928,7 @@ class ThresholdsModel(BaseModel):
     horizon_warn_deg: float = 3.0
 
 
-@app.post("/api/reclassify")
+@app.post("/api/reclassify", dependencies=[Depends(require_local)])
 def reclassify(t: ThresholdsModel) -> dict[str, Any]:
     """Re-run the decision engine using fresh thresholds against cached metrics."""
     conn = _conn()
@@ -902,7 +947,7 @@ def reclassify(t: ThresholdsModel) -> dict[str, Any]:
     return {"updated": updated}
 
 
-@app.post("/api/images/{image_id}/xmp")
+@app.post("/api/images/{image_id}/xmp", dependencies=[Depends(require_local)])
 def write_xmp_endpoint(image_id: int) -> dict[str, Any]:
     conn = _conn()
     row = conn.execute(

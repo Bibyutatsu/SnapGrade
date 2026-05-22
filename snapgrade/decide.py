@@ -23,9 +23,19 @@ class Thresholds:
 
     # Eyes
     reject_closed_eyes: bool = True
+    # Continuous eye-openness scoring band: EAR ear_closed..ear_open maps to 0..1.
+    # The hard closed-eye *gate* (any_closed) is owned by the analyzer
+    # (face_expression.CLOSED_EAR_THRESHOLD); these are the decision layer's
+    # scoring bounds, kept here so they're tunable alongside the other knobs.
+    ear_closed: float = 0.20
+    ear_open: float = 0.35
 
     # Composition
     horizon_warn_deg: float = 3.0  # surfaces a warning, never auto-rejects
+
+    # Subject-sharpness overrides (face subjects only).
+    soft_face_lap_max: float = 50.0      # laplacian var below this on a face = soft
+    motion_blur_anisotropy: float = 0.45  # FFT anisotropy above this = directional (motion) blur
 
     # Weights for the combined "quality" score used to assign stars.
     w_sharpness: float = 0.50
@@ -55,7 +65,7 @@ def _exposure_score(exposure: dict[str, Any]) -> float:
     return float(0.6 * mid_bonus + 0.4 * dr_bonus)
 
 
-def _eyes_score(eyes: dict[str, Any]) -> float:
+def _eyes_score(eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float = 0.35) -> float:
     if eyes.get("faces", 0) == 0:
         return 1.0  # no faces → eyes can't penalize
     if eyes.get("any_closed"):
@@ -63,8 +73,8 @@ def _eyes_score(eyes: dict[str, Any]) -> float:
     min_ear = eyes.get("min_ear")
     if min_ear is None:
         return 0.5
-    # Map EAR 0.20..0.35 → 0..1
-    return max(0.0, min(1.0, (min_ear - 0.20) / 0.15))
+    span = max(ear_open - ear_closed, 1e-6)
+    return max(0.0, min(1.0, (min_ear - ear_closed) / span))
 
 
 def _composition_score(comp: dict[str, Any]) -> float:
@@ -90,7 +100,7 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
 
     sharp_score = (subject_sharp or sharp).get("score", 0.0)
     exposure_score = _exposure_score(exposure)
-    eyes_score = _eyes_score(eyes)
+    eyes_score = _eyes_score(eyes, t.ear_closed, t.ear_open)
     comp_score = _composition_score(comp)
 
     aesthetic_score = metrics.get("aesthetic_score")
@@ -114,8 +124,8 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     lap_val = ss.get("laplacian_var", 0.0)
     aniso = ss.get("fft_anisotropy", 0.0)
     blur_angle = ss.get("blur_angle_deg")
-    soft_face = face_subject and subject_sharp is not None and lap_val < 50.0
-    if aniso > 0.45:
+    soft_face = face_subject and subject_sharp is not None and lap_val < t.soft_face_lap_max
+    if aniso > t.motion_blur_anisotropy:
         blur_kind = f"motion blur (~{blur_angle:.0f}°)" if blur_angle is not None else "motion blur"
     else:
         blur_kind = "out of focus"

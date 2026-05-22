@@ -8,6 +8,7 @@ greedy cosine-similarity threshold (no sklearn dependency).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,13 @@ import numpy as np
 
 from . import db, decode
 
+log = logging.getLogger(__name__)
+
 _APP = None
+
+# Faces flushed per transaction — mirrors pipeline.PERSIST_BATCH so detection
+# pays one BEGIN/COMMIT per ~50 faces instead of one per image.
+PERSIST_BATCH = 50
 
 
 @dataclass(frozen=True)
@@ -34,7 +41,20 @@ def _app():
     if _APP is None:
         from insightface.app import FaceAnalysis
 
-        _APP = FaceAnalysis(name="buffalo_s", providers=["CPUExecutionProvider"])
+        # Prefer CoreML (ANE/GPU) on Apple Silicon, falling back to CPU. ORT
+        # silently drops providers it can't construct, so listing CoreML first
+        # is safe on machines without it.
+        try:
+            import onnxruntime as ort
+            available = set(ort.get_available_providers())
+        except Exception:
+            available = set()
+        providers = (
+            ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            if "CoreMLExecutionProvider" in available
+            else ["CPUExecutionProvider"]
+        )
+        _APP = FaceAnalysis(name="buffalo_s", providers=providers)
         _APP.prepare(ctx_id=-1, det_size=(640, 640))
     return _APP
 
@@ -116,24 +136,36 @@ def detect_and_store(
     if progress_cb is not None:
         progress_cb(0, total)
     inserted = 0
+    batch: list[tuple[int, str, bytes, float]] = []
+
+    def _flush() -> None:
+        nonlocal inserted
+        if not batch:
+            return
+        with db.transaction(conn):
+            conn.executemany(
+                "INSERT INTO faces(image_id, bbox, embedding, quality) VALUES(?,?,?,?)",
+                batch,
+            )
+        inserted += len(batch)
+        batch.clear()
+
     for i, r in enumerate(rows, start=1):
         try:
             img = decode.decode(Path(r["path"]), max_edge=cfg.max_edge)
             faces = app.get(img.rgb[:, :, ::-1])  # insightface wants BGR
-            with db.transaction(conn):
-                for face in faces:
-                    bbox = [int(x) for x in face.bbox.tolist()]
-                    emb = np.asarray(face.normed_embedding, dtype=np.float32).tobytes()
-                    quality = _face_quality(face, img.rgb)
-                    conn.execute(
-                        "INSERT INTO faces(image_id, bbox, embedding, quality) VALUES(?,?,?,?)",
-                        (int(r["id"]), json.dumps(bbox), emb, quality),
-                    )
-                    inserted += 1
-        except Exception:
-            pass
+            for face in faces:
+                bbox = [int(x) for x in face.bbox.tolist()]
+                emb = np.asarray(face.normed_embedding, dtype=np.float32).tobytes()
+                quality = _face_quality(face, img.rgb)
+                batch.append((int(r["id"]), json.dumps(bbox), emb, quality))
+            if len(batch) >= PERSIST_BATCH:
+                _flush()
+        except Exception as e:
+            log.warning("face detect failed for %s: %s", r["path"], e)
         if progress_cb is not None:
             progress_cb(i, total)
+    _flush()
     return inserted
 
 
@@ -273,8 +305,10 @@ def cluster(conn: sqlite3.Connection, cfg: FaceClusterConfig | None = None) -> i
         cluster_ids = _greedy_cluster(embs, cfg.similarity_threshold)
 
     with db.transaction(conn):
-        for fid, cid in zip(ids, cluster_ids):
-            conn.execute("UPDATE faces SET cluster_id=? WHERE id=?", (int(cid), fid))
+        conn.executemany(
+            "UPDATE faces SET cluster_id=? WHERE id=?",
+            [(int(cid), fid) for fid, cid in zip(ids, cluster_ids)],
+        )
     return len(set(cluster_ids))
 
 

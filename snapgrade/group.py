@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import db
 from .metrics.phash import hamming
@@ -148,15 +148,29 @@ def group_bursts(
     bursts: list[Burst] = []
     with db.transaction(conn):
         if library_id is not None:
+            # Snapshot the bursts this library participates in *before* clearing
+            # members, so the orphan sweep below only touches those bursts — a
+            # global "delete empty bursts" would also catch another library's
+            # bursts that happen to be transiently empty mid-transaction.
+            affected = [
+                int(r["burst_id"]) for r in conn.execute(
+                    "SELECT DISTINCT bm.burst_id FROM burst_members bm "
+                    "JOIN images i ON i.id = bm.image_id WHERE i.library_id = ?",
+                    [library_id],
+                ).fetchall()
+            ]
             conn.execute(
                 "DELETE FROM burst_members WHERE image_id IN "
                 "(SELECT id FROM images WHERE library_id = ?)",
                 [library_id],
             )
-            conn.execute(
-                "DELETE FROM bursts WHERE id NOT IN "
-                "(SELECT DISTINCT burst_id FROM burst_members)"
-            )
+            if affected:
+                ph = ",".join("?" for _ in affected)
+                conn.execute(
+                    f"DELETE FROM bursts WHERE id IN ({ph}) AND id NOT IN "
+                    "(SELECT DISTINCT burst_id FROM burst_members)",
+                    affected,
+                )
         else:
             conn.execute("DELETE FROM burst_members")
             conn.execute("DELETE FROM bursts")
@@ -170,7 +184,7 @@ def group_bursts(
             best_idx = scored[0][0]
             cur = conn.execute(
                 "INSERT INTO bursts(created_at) VALUES(?)",
-                (datetime.utcnow().isoformat(),),
+                (datetime.now(timezone.utc).isoformat(),),
             )
             burst_id = int(cur.lastrowid)
             image_ids = tuple(items[idx]["id"] for idx in member_idxs)

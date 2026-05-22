@@ -20,10 +20,15 @@
     if (!r.ok) throw new Error(`${path} → ${r.status}`);
     return r.json();
   }
+  // Custom header required by the backend's CSRF guard (require_local). Its
+  // presence forces a CORS preflight, which the locked-down origin list rejects
+  // for any cross-site page — so only the same-origin UI can drive mutations.
+  const CSRF = { 'X-SnapGrade': '1' };
+
   async function jpost(path, body) {
     const r = await fetch(API + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CSRF },
       body: body == null ? null : JSON.stringify(body),
     });
     if (!r.ok) {
@@ -34,7 +39,7 @@
     return r.json();
   }
   async function jdel(path) {
-    const r = await fetch(API + path, { method: 'DELETE' });
+    const r = await fetch(API + path, { method: 'DELETE', headers: { ...CSRF } });
     if (!r.ok) throw new Error(`${path} → ${r.status}`);
     return r.json();
   }

@@ -17,7 +17,7 @@ import json
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -353,20 +353,20 @@ def apply_plan(
         ops.append((str(entry.source), str(entry.target)))
         written += 1
 
-    if conn is not None and not dry_run:
-        if moves:
-            for src, dst in moves:
-                conn.execute("UPDATE images SET path=? WHERE path=?", (dst, src))
+    if conn is not None and not dry_run and (moves or ops):
+        from . import db
         if ops:
             _ensure_ops_schema(conn)
-            run_id = datetime.utcnow().isoformat()
+        run_id = datetime.now(timezone.utc).isoformat()
+        with db.transaction(conn):
+            for src, dst in moves:
+                conn.execute("UPDATE images SET path=? WHERE path=?", (dst, src))
             for src, dst in ops:
                 conn.execute(
                     "INSERT INTO organize_ops(run_id, mode, source, target, created_at) "
                     "VALUES(?,?,?,?,?)",
                     (run_id, mode, src, dst, run_id),
                 )
-            conn.commit()
     return written
 
 
@@ -386,27 +386,28 @@ def undo_last(conn: sqlite3.Connection) -> dict[str, int]:
         "SELECT id, mode, source, target FROM organize_ops WHERE run_id=? ORDER BY id DESC",
         (run_id,),
     ).fetchall()
+    from . import db
     undone = skipped = 0
-    for r in rows:
-        target = Path(r["target"])
-        source = Path(r["source"])
-        try:
-            if r["mode"] == "move":
-                if target.exists() and not source.exists():
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(target), str(source))
-                    conn.execute("UPDATE images SET path=? WHERE path=?", (str(source), str(target)))
-                    undone += 1
-                else:
-                    skipped += 1
-            else:  # symlink / hardlink / copy — just remove the materialised target
-                if target.is_symlink() or target.exists():
-                    target.unlink()
-                    undone += 1
-                else:
-                    skipped += 1
-        except OSError:
-            skipped += 1
-    conn.execute("DELETE FROM organize_ops WHERE run_id=?", (run_id,))
-    conn.commit()
+    with db.transaction(conn):
+        for r in rows:
+            target = Path(r["target"])
+            source = Path(r["source"])
+            try:
+                if r["mode"] == "move":
+                    if target.exists() and not source.exists():
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(target), str(source))
+                        conn.execute("UPDATE images SET path=? WHERE path=?", (str(source), str(target)))
+                        undone += 1
+                    else:
+                        skipped += 1
+                else:  # symlink / hardlink / copy — just remove the materialised target
+                    if target.is_symlink() or target.exists():
+                        target.unlink()
+                        undone += 1
+                    else:
+                        skipped += 1
+            except OSError:
+                skipped += 1
+        conn.execute("DELETE FROM organize_ops WHERE run_id=?", (run_id,))
     return {"undone": undone, "skipped": skipped}

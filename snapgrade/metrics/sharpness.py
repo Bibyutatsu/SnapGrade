@@ -116,13 +116,23 @@ def _squash(x: float, k: float) -> float:
     return float(x / (x + k)) if x >= 0 else 0.0
 
 
+# Resolution the knee constants below were calibrated against. Gradient-energy
+# metrics (Tenengrad, Laplacian variance) scale ~1/s² with the working long
+# edge s, so a larger analysis image (e.g. --max-edge 3000) would otherwise read
+# as uniformly *softer* and shift every verdict. Scaling the knees by (REF/edge)²
+# makes the score scale-invariant; it's an exact no-op at the 2000px default.
+_REF_LONG_EDGE = 2000.0
+
+
 def measure(rgb: np.ndarray, bbox: tuple[int, int, int, int] | None = None) -> Sharpness:
     lap = laplacian_variance(rgb, bbox)
     ten = tenengrad(rgb, bbox)
     aniso, angle = fft_anisotropy(rgb, bbox, return_angle=True)
-    # Knee values calibrated for ~2000px-long-edge analysis images. The user
-    # can re-tune via the settings UI; these are sensible defaults.
-    score = 0.5 * _squash(lap, 150.0) + 0.5 * _squash(ten, 600.0)
+    # Knee values calibrated for ~2000px-long-edge analysis images, rescaled to
+    # the actual working resolution so --max-edge doesn't drift the score.
+    long_edge = float(max(rgb.shape[0], rgb.shape[1])) or _REF_LONG_EDGE
+    scale = (_REF_LONG_EDGE / long_edge) ** 2
+    score = 0.5 * _squash(lap, 150.0 * scale) + 0.5 * _squash(ten, 600.0 * scale)
     return Sharpness(
         laplacian_var=lap,
         tenengrad=ten,

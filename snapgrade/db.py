@@ -120,6 +120,14 @@ def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None)  # autocommit
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # busy_timeout: when two connections write concurrently (e.g. an ingest and
+    # a faces run), the loser waits up to 5s for the lock instead of failing
+    # immediately with "database is locked". synchronous=NORMAL is the safe WAL
+    # default for a local single-user cache; cache_size=-65536 gives a 64 MB page
+    # cache. All three are essentially free perf / robustness wins.
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-65536")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate_library_id(conn)
@@ -142,12 +150,12 @@ def _migrate_library_id(conn: sqlite3.Connection) -> None:
     ).fetchall()
     if not orphans:
         return
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _tz
     by_root: dict[str, list[int]] = {}
     for r in orphans:
         root = str(Path(r["path"]).parent)
         by_root.setdefault(root, []).append(int(r["id"]))
-    now = _dt.utcnow().isoformat()
+    now = _dt.now(_tz.utc).isoformat()
     for root, ids in by_root.items():
         conn.execute(
             "INSERT OR IGNORE INTO libraries(root_path, display_name, added_at) VALUES (?, ?, ?)",
@@ -165,14 +173,14 @@ def _migrate_library_id(conn: sqlite3.Connection) -> None:
 
 
 def ensure_library(conn: sqlite3.Connection, root_path: str, display_name: str | None = None) -> int:
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _tz
     row = conn.execute("SELECT id FROM libraries WHERE root_path=?", (root_path,)).fetchone()
     if row:
         return int(row["id"])
     conn.execute(
         "INSERT INTO libraries(root_path, display_name, added_at, models_run, models_pending) "
         "VALUES (?, ?, ?, ?, ?)",
-        (root_path, display_name or Path(root_path).name or root_path, _dt.utcnow().isoformat(), "{}", "[]"),
+        (root_path, display_name or Path(root_path).name or root_path, _dt.now(_tz.utc).isoformat(), "{}", "[]"),
     )
     row = conn.execute("SELECT id FROM libraries WHERE root_path=?", (root_path,)).fetchone()
     return int(row["id"])

@@ -191,14 +191,21 @@ def faces_cmd(
         False, "--incremental",
         help="Attach only new faces to existing clusters (no full rebuild)",
     ),
-    threshold: float = typer.Option(0.45, "--threshold"),
+    threshold: float = typer.Option(
+        None, "--threshold",
+        help="Cosine cutoff for same-person. Default from FaceClusterConfig (0.30).",
+    ),
     db_path: Path = typer.Option(None, "--db"),
 ) -> None:
     """Detect faces (InsightFace) and cluster them across the library (HNSW)."""
     from . import face_cluster
 
     conn = db.connect(db_path) if db_path else db.connect()
-    cfg = face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+    cfg = (
+        face_cluster.FaceClusterConfig()
+        if threshold is None
+        else face_cluster.FaceClusterConfig(similarity_threshold=threshold)
+    )
     if detect:
         n = face_cluster.detect_and_store(conn, cfg)
         console.print(f"Detected and stored [bold]{n}[/] new face embeddings.")
