@@ -582,7 +582,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
       {!compact && (
         <div className="sg-detail-preview" onClick={onOpenLightbox}
              style={{ cursor: 'zoom-in', position: 'relative' }}>
-          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block', position: 'relative', zIndex: 1 }}
+          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block' }}
                onError={e => { if (e.currentTarget.src !== m.preview) e.currentTarget.src = m.preview; }} />
           {showBoxes && <SubjectOverlay subjects={m.metrics?.subjects} decoded={m.metrics?.decoded_size} />}
           <div className="sg-corners" />
@@ -735,15 +735,19 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
   const [showBoxes, setShowBoxes] = useState(true);
   // Zoom/pan for pixel-level sharpness review (the single biggest functional
   // gap before). The whole image+overlay wrapper is transformed uniformly, so
-  // subject/OCR boxes stay registered at any zoom.
+  // subject/OCR boxes stay registered at any zoom. Zoom is incremental and
+  // focused on the cursor; offset keeps the focal point fixed under the pointer.
   const [scale, setScale]   = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const dragRef = useRef(null);
+  const [hiRes, setHiRes]   = useState(null);  // native-res src, fetched once on first zoom-in
+  const dragRef     = useRef(null);
+  const viewportRef = useRef(null);
 
   // Reset when the frame changes.
-  useEffect(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, [image && image.id]);
+  useEffect(() => { setScale(1); setOffset({ x: 0, y: 0 }); setHiRes(null); }, [image && image.id]);
 
-  // Approximate the natural-pixel ("1:1") scale from the fit-rendered size.
+  // Native-pixel ("1:1") scale relative to the fit-rendered size — the max useful
+  // magnification (beyond it we'd just upscale).
   const oneToOne = useCallback(() => {
     const W = image?.width || 6016, H = image?.height || 4016;
     const vw = window.innerWidth * 0.86, vh = window.innerHeight * 0.78;
@@ -751,12 +755,28 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
     const renderedW = (vw / vh > ar) ? vh * ar : vw;
     return Math.max(1, Math.min(8, W / renderedW));
   }, [image]);
+  const maxScale = oneToOne();
+
+  // Zoom to `next` while keeping the point (fx,fy) — measured from the viewport
+  // centre — pinned under the cursor. With transformOrigin at centre, a point at
+  // offset p from centre maps to p*scale + translate; solving to hold it fixed:
+  //   t' = t + (fx - cx)·(next - prev) ... expressed about the centre.
+  const zoomTo = useCallback((next, clientX, clientY) => {
+    next = Math.max(1, Math.min(maxScale, next));
+    setScale(prev => {
+      if (next <= 1) { setOffset({ x: 0, y: 0 }); return 1; }
+      const vp = viewportRef.current?.getBoundingClientRect();
+      if (vp && clientX != null) {
+        const fx = clientX - (vp.left + vp.width / 2);
+        const fy = clientY - (vp.top + vp.height / 2);
+        const ratio = next / prev;
+        setOffset(o => ({ x: fx - (fx - o.x) * ratio, y: fy - (fy - o.y) * ratio }));
+      }
+      return next;
+    });
+  }, [maxScale]);
 
   const reset = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
-  const toggleZoom = useCallback(() => {
-    setScale(s => (s > 1 ? 1 : oneToOne()));
-    setOffset({ x: 0, y: 0 });
-  }, [oneToOne]);
 
   useEffect(() => {
     const handler = e => {
@@ -767,15 +787,37 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
       if (e.key === 'c') onVerdict('review', null);
       if (e.key === 'x') onVerdict('reject', null);
       if (e.key === '0' || e.key === 'f') reset();
-      if (e.key === '1') toggleZoom();
+      if (e.key === '1') zoomTo(maxScale);
+      if (e.key === '+' || e.key === '=') zoomTo(scale * 1.4);
+      if (e.key === '-' || e.key === '_') zoomTo(scale / 1.4);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose, onPrev, onNext, onVerdict, reset, toggleZoom]);
+  }, [onClose, onPrev, onNext, onVerdict, reset, zoomTo, maxScale, scale]);
 
-  function onWheel(e) {
+  // Fetch native-res pixels the first time the user zooms past fit, so detail is
+  // real instead of an upscaled 1600px preview. Loads once per frame.
+  useEffect(() => {
+    if (scale > 1 && !hiRes && image) setHiRes(`${image.preview}?long_edge=6000`);
+  }, [scale, hiRes, image]);
+
+  // Native non-passive listener so preventDefault() can stop the page scrolling
+  // while wheel-zooming (React's synthetic onWheel is passive and would warn).
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onWheel = e => {
+      e.preventDefault();
+      zoomTo(scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoomTo, scale]);
+
+  function onDoubleClick(e) {
     e.preventDefault();
-    setScale(s => Math.max(1, Math.min(8, s * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+    if (scale > 1) reset();
+    else zoomTo(Math.min(2.5, maxScale), e.clientX, e.clientY);
   }
   function onMouseDown(e) {
     if (scale <= 1) return;
@@ -804,12 +846,12 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
             transformed for zoom/pan so ImageWithOverlays' contain-fit boxes stay
             registered. Wheel = zoom, drag = pan (when zoomed). */}
         <div
-          onWheel={onWheel}
+          ref={viewportRef}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
           onMouseLeave={endDrag}
-          onDoubleClick={toggleZoom}
+          onDoubleClick={onDoubleClick}
           style={{ position: 'relative', width: '86vw', height: '78vh', overflow: 'hidden',
                    cursor: zoomed ? (dragRef.current ? 'grabbing' : 'grab') : 'zoom-in' }}>
           <div style={{ position: 'absolute', inset: 0,
@@ -817,7 +859,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
                         transformOrigin: 'center center',
                         transition: dragRef.current ? 'none' : 'transform .12s ease-out' }}>
             <ImageWithOverlays
-              src={image.preview}
+              src={hiRes || image.preview}
               fallbackSrc={image.thumb}
               subjects={image.metrics?.subjects}
               decoded={image.metrics?.decoded_size}
@@ -831,7 +873,9 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
           {/* Zoom controls */}
           <div style={{ position:'absolute', bottom:14, right:14, display:'flex', gap:6, zIndex:3 }}
                onClick={e => e.stopPropagation()}>
-            <button onClick={toggleZoom} style={lbZoomBtn(zoomed)}>{zoomed ? 'Fit' : '1:1'}</button>
+            <button onClick={() => zoomTo(scale / 1.4)} disabled={!zoomed} style={lbZoomBtn(false)}>−</button>
+            <button onClick={() => zoomTo(scale * 1.4)} style={lbZoomBtn(false)}>+</button>
+            <button onClick={() => (zoomed ? reset() : zoomTo(maxScale))} style={lbZoomBtn(zoomed)}>{zoomed ? 'Fit' : '1:1'}</button>
             <span style={{ ...lbZoomBtn(false), cursor:'default', fontVariantNumeric:'tabular-nums' }}>
               {Math.round(scale * 100)}%
             </span>
