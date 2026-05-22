@@ -43,6 +43,19 @@
     if (!r.ok) throw new Error(`${path} → ${r.status}`);
     return r.json();
   }
+  async function jpatch(path, body) {
+    const r = await fetch(API + path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...CSRF },
+      body: body == null ? null : JSON.stringify(body),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.json()).detail || ''; } catch {}
+      throw new Error(`${path} → ${r.status} ${detail}`);
+    }
+    return r.json();
+  }
 
   // ── Shape adapters ──────────────────────────────────────────────────────────
   // API rows → the shape the prototype components expect.
@@ -200,6 +213,9 @@
       const qs = new URLSearchParams({ hamming, seconds });
       return jpost(`/api/group?${qs.toString()}`);
     },
+    setBurstBest(burstId, imageId) {
+      return jpatch(`/api/bursts/${burstId}/best`, { image_id: imageId });
+    },
     runFaces({ incremental = false, threshold } = {}) {
       const prefs = window.SG_PREFS || {};
       const t = threshold ?? prefs.faceThreshold ?? 0.30;
@@ -210,6 +226,21 @@
       const prefs = window.SG_PREFS || {};
       const m = minSize ?? prefs.faceMinSize ?? 5;
       return jget(`/api/faces/clusters?min_size=${m}`).then(r => r.items || []);
+    },
+    labelCluster(clusterId, label) {
+      return jpost(`/api/faces/clusters/${clusterId}/label`, { label });
+    },
+    mergeClusters(into, from) {
+      return jpost('/api/faces/clusters/merge', { into, from });
+    },
+    removeFace(faceId) {
+      return jpost(`/api/faces/${faceId}/cluster`, { cluster_id: null });
+    },
+    reassignFace(faceId, clusterId) {
+      return jpost(`/api/faces/${faceId}/cluster`, { cluster_id: clusterId });
+    },
+    previewClusters(threshold) {
+      return jget(`/api/faces/clusters/preview?threshold=${threshold}`);
     },
     search(q, { k = 24, libraryId } = {}) {
       const qs = new URLSearchParams({ q, k });

@@ -13,7 +13,18 @@ function App() {
   const [tab, setTab] = useState(() => localStorage.getItem('sg.tab') || 'triage');
   useEffect(() => { localStorage.setItem('sg.tab', tab); }, [tab]);
   const [collapsed, setCol] = useState(false);
+  // Triage's active library + filter-panel state are lifted here so the sidebar
+  // can host the library list (folding away the old LibRail) and so opening the
+  // filter panel can auto-collapse the sidebar to reclaim horizontal space.
+  const [activeLib, setActiveLib] = useState(null);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [t, setTweak]     = useTweaks(TWEAK_DEFAULTS);
+
+  // Filter panel open ⇒ collapse the sidebar; closing restores it. Only while on
+  // triage, where the panel lives.
+  useEffect(() => {
+    if (tab === 'triage') setCol(panelOpen);
+  }, [panelOpen, tab]);
 
   const [stats, setStats] = useState(window.SG_DATA.MOCK_STATS);
   // Bumped when SG_DATA is refreshed so screens that read window.SG_DATA at
@@ -73,6 +84,9 @@ function App() {
           stats={MOCK_STATS}
           collapsed={collapsed}
           onToggle={() => setCol(c => !c)}
+          libraries={window.SG_DATA.MOCK_LIBRARIES}
+          activeLib={activeLib}
+          setActiveLib={setActiveLib}
         />
         <div style={{ display:'flex', flexDirection:'column', minWidth:0, height:'100vh', overflow:'hidden' }}>
           <TopBar
@@ -84,7 +98,9 @@ function App() {
           />
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
             {tab === 'library'  && <LibraryScreen  key={`lib-${dataVersion}`}  stats={MOCK_STATS} />}
-            {tab === 'triage'   && <TriageScreen   key={`tri-${dataVersion}`}  layout={t.triageLayout} setLayout={v => setTweak('triageLayout', v)} />}
+            {tab === 'triage'   && <TriageScreen   key={`tri-${dataVersion}`}  layout={t.triageLayout} setLayout={v => setTweak('triageLayout', v)}
+                                                    activeLib={activeLib} setActiveLib={setActiveLib}
+                                                    panelOpen={panelOpen} setPanelOpen={setPanelOpen} />}
             {tab === 'bursts'   && <BurstsScreen   key={`bur-${dataVersion}`} />}
             {tab === 'faces'    && <FacesScreen    key={`fac-${dataVersion}`} />}
             {tab === 'xmp'      && <XMPExportScreen key={`xmp-${dataVersion}`} />}
@@ -100,9 +116,9 @@ function App() {
           label="Theme"
           value={t.theme}
           options={[
-            { value: 'dark-film',   label: 'Film Lab' },
+            { value: 'dark-film',   label: 'Cinematic' },
             { value: 'dark-modern', label: 'Modern' },
-            { value: 'light-pro',   label: 'Light Pro' },
+            { value: 'light-pro',   label: 'Utility (Light)' },
           ]}
           onChange={v => setTweak('theme', v)}
         />

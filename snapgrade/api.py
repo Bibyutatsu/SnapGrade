@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db, decide, group, models as db_models, organize, pipeline, thumb, xmp
 
@@ -736,6 +736,19 @@ def get_burst(burst_id: int) -> dict[str, Any]:
     return list_images(burst=burst_id, limit=200)
 
 
+class BurstBest(BaseModel):
+    image_id: int
+
+
+@app.patch("/api/bursts/{burst_id}/best", dependencies=[Depends(require_local)])
+def set_burst_best(burst_id: int, payload: BurstBest) -> dict[str, Any]:
+    """Persist the user's best-of-burst pick. 404 if the image isn't in the burst."""
+    conn = _conn()
+    if not db.set_burst_best(conn, burst_id, payload.image_id):
+        raise HTTPException(404, f"image {payload.image_id} not in burst {burst_id}")
+    return {"ok": True, "burst_id": burst_id, "best_image_id": payload.image_id}
+
+
 @app.post("/api/faces/run", dependencies=[Depends(require_local)])
 def faces_run(
     background: BackgroundTasks,
@@ -798,6 +811,7 @@ def faces_clusters(
     best = face_cluster.best_faces_per_cluster(conn)
     if not best:
         return {"items": []}
+    labels = face_cluster.get_labels(conn)
     # Per-cluster counts and sampled member images, scoped by library_id if given.
     items: list[dict[str, Any]] = []
     for cid, rep in sorted(best.items()):
@@ -813,26 +827,77 @@ def faces_clusters(
         ).fetchone()["c"]
         if cnt < min_size:
             continue
+        # One representative face per image (SQLite returns the f.id/image_id from
+        # the MAX(quality) row), so a "remove this face" acts on the right face.
         rows = conn.execute(
-            f"SELECT DISTINCT f.image_id FROM faces f "
+            f"SELECT f.id AS face_id, f.image_id, MAX(f.quality) AS q FROM faces f "
             f"JOIN images i ON i.id = f.image_id WHERE f.cluster_id = ?{scope_sql} "
-            f"ORDER BY f.quality DESC NULLS LAST LIMIT ?",
+            f"GROUP BY f.image_id ORDER BY q DESC NULLS LAST LIMIT ?",
             [*params, thumbs_per],
         ).fetchall()
         items.append({
             "id": int(cid),
-            "label": f"Cluster {cid}",
+            "label": labels.get(int(cid)) or f"Cluster {cid}",
+            "named": int(cid) in labels,
             "count": int(cnt),
             "rep_image_id": int(rep["image_id"]),
             "rep_thumb": f"/api/images/{int(rep['image_id'])}/thumb?size=256",
             "thumbs": [
                 {"id": int(r["image_id"]),
                  "image_id": int(r["image_id"]),
+                 "face_id": int(r["face_id"]),
                  "url": f"/api/images/{int(r['image_id'])}/thumb?size=256"}
                 for r in rows
             ],
         })
     return {"items": items}
+
+
+class ClusterLabel(BaseModel):
+    label: str
+
+
+class ClusterMerge(BaseModel):
+    into: int
+    from_: int = Field(alias="from")
+
+    model_config = {"populate_by_name": True}
+
+
+class FaceReassign(BaseModel):
+    cluster_id: int | None = None
+
+
+@app.post("/api/faces/clusters/{cluster_id}/label", dependencies=[Depends(require_local)])
+def label_cluster(cluster_id: int, payload: ClusterLabel) -> dict[str, Any]:
+    from . import face_cluster
+    conn = _conn()
+    face_cluster.set_label(conn, cluster_id, payload.label)
+    return {"ok": True, "cluster_id": cluster_id, "label": payload.label.strip()}
+
+
+@app.post("/api/faces/clusters/merge", dependencies=[Depends(require_local)])
+def merge_clusters_endpoint(payload: ClusterMerge) -> dict[str, Any]:
+    from . import face_cluster
+    conn = _conn()
+    moved = face_cluster.merge_clusters(conn, payload.into, payload.from_)
+    return {"ok": True, "into": payload.into, "from": payload.from_, "moved": moved}
+
+
+@app.post("/api/faces/{face_id}/cluster", dependencies=[Depends(require_local)])
+def reassign_face(face_id: int, payload: FaceReassign) -> dict[str, Any]:
+    from . import face_cluster
+    conn = _conn()
+    if not face_cluster.set_face_cluster(conn, face_id, payload.cluster_id):
+        raise HTTPException(404, f"face {face_id} not found")
+    return {"ok": True, "face_id": face_id, "cluster_id": payload.cluster_id}
+
+
+@app.get("/api/faces/clusters/preview")
+def faces_preview(threshold: float = Query(..., ge=0.0, le=1.0)) -> dict[str, Any]:
+    """Cluster count at a candidate threshold without persisting."""
+    from . import face_cluster
+    return face_cluster.preview_cluster_count(_conn(), threshold)
 
 
 @app.get("/api/faces/clusters/{cluster_id}/best")

@@ -1,7 +1,7 @@
 // SnapGrade — Secondary Screens
 // Library, Bursts, Faces, XMP Export, Organize, Settings
 
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
 // ── Shared library filter bar ─────────────────────────────────────────────────
 function LibraryFilterBar({ activeLib, setActiveLib, counts }) {
@@ -38,6 +38,7 @@ function LibraryScreen({ stats }) {
   const [results, setResults] = useState(null);  // null = no search yet, [] = empty results
   const [searching, setSearching] = useState(false);
   const [searchMsg, setSearchMsg] = useState('');
+  const [statsOpen, setStatsOpen] = useState(false);  // stats collapsed by default for returning users
 
   async function runSearch() {
     const q = query.trim();
@@ -132,9 +133,109 @@ function LibraryScreen({ stats }) {
       <div className="sg-page">
         <p className="sg-lede">Point the lens at a folder. Frames are read, measured, and filed — nothing is moved, nothing is altered.</p>
 
+        {/* Search — a slim affordance above the data, not a numbered workflow step. */}
+        <div style={{ display:'flex', gap:8, alignItems:'stretch', marginBottom:24 }}>
+          <input
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+            placeholder='⌕  Search by description — "crowd of people", "text on a sign"…'
+            className="sg-folder-display"
+            style={{ flex:1, minHeight:'auto', padding:'9px 12px', color:'var(--c-text)', fontStyle:'normal' }}
+          />
+          <Btn variant="primary" disabled={!query.trim() || searching} onClick={runSearch}>
+            {searching ? 'Searching…' : 'Search'}
+          </Btn>
+        </div>
+        {searchMsg && <div className="sg-toast" style={{ marginTop:-14, marginBottom:18 }}>{searchMsg}</div>}
+        {results && results.length > 0 && (
+          <div style={{ marginBottom:24, display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10 }}>
+            {results.map(r => (
+              <a key={r.image_id} href={`/api/images/${r.image_id}/preview`} target="_blank" rel="noreferrer"
+                 style={{ position:'relative', display:'block', aspectRatio:'1/1', overflow:'hidden', borderRadius:'var(--radius)', border:'1px solid var(--c-border2)' }}>
+                <img src={r.thumb} alt="" loading="lazy" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                <span style={{ position:'absolute', bottom:4, right:4, fontSize:9, padding:'2px 6px', background:'rgba(0,0,0,0.7)', color:'#fff', borderRadius:'var(--radius)', letterSpacing:'0.05em', fontVariantNumeric:'tabular-nums' }}>
+                  {r.score.toFixed(3)}
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+
+        {/* Hero: the actual data a returning user came for. */}
         <div className="sg-card">
-          <div className="sg-card-no">i.</div>
-          <h2 className="sg-card-h2">Open a <em>roll</em>.</h2>
+          <h2 className="sg-card-h2">Your <em>libraries</em>.</h2>
+          <div className="sg-card-sub">Each folder tracked independently · remove without touching disk</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+            {MOCK_LIBRARIES.map(lib => {
+              const v = lib.by_verdict || {};
+              return (
+                <div key={lib.id} className="sg-lib-row">
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:20, color:'var(--c-text)', marginBottom:2 }}>{lib.display_name}</div>
+                    <div style={{ fontSize:10, color:'var(--c-mute)', marginBottom:8, wordBreak:'break-all' }}>{lib.root_path}</div>
+                    <div style={{ display:'flex', gap:18, fontSize:11, color:'var(--c-text2)' }}>
+                      <span><b style={{ fontFamily:'var(--font-display)', fontStyle:'italic', color:'var(--c-text)' }}>{lib.image_count}</b> frames</span>
+                      <span style={{ color:'var(--c-keeper)' }}><b>{v.keeper||0}</b> keep</span>
+                      <span style={{ color:'var(--c-amber)' }}><b>{v.review||0}</b> review</span>
+                      <span style={{ color:'var(--c-danger)' }}><b>{v.reject||0}</b> reject</span>
+                    </div>
+                    <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
+                      {Object.keys(lib.models_run || {}).map(m => (
+                        <span key={m} style={{ fontSize:8, letterSpacing:'0.2em', textTransform:'uppercase', padding:'3px 8px', border:'1px solid var(--c-keeper)', color:'var(--c-keeper)', borderRadius:'var(--radius)' }}>{m} ✓</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    <Btn variant="ghost"  style={{ fontSize:9, padding:'6px 12px' }} onClick={() => syncLib(lib.id)}>Sync</Btn>
+                    <Btn variant="danger" style={{ fontSize:9, padding:'6px 12px' }} onClick={() => removeLib(lib.id, lib.display_name)}>Remove</Btn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Stats — collapsed by default; a returning user wants the list, not counts. */}
+        {stats && (
+          <div className="sg-card" style={{ padding:0 }}>
+            <button onClick={() => setStatsOpen(o => !o)}
+              style={{ width:'100%', textAlign:'left', background:'none', border:'none',
+                       cursor:'pointer', padding:'18px 28px', display:'flex',
+                       alignItems:'center', justifyContent:'space-between' }}>
+              <span>
+                <span className="sg-card-h2" style={{ display:'block' }}>State of the <em>library</em>.</span>
+                <span className="sg-card-sub" style={{ display:'block', marginBottom:0 }}>
+                  {pad(stats.images,1)} frames · {pad(stats.libraries,1)} libraries · live counts
+                </span>
+              </span>
+              <span style={{ fontSize:12, color:'var(--c-mute)', transition:'transform .15s',
+                             transform: statsOpen ? 'none' : 'rotate(-90deg)' }}>▾</span>
+            </button>
+            {statsOpen && (
+              <div className="sg-statgrid">
+                {[
+                  { v: pad(stats.libraries,3),              k:'Libraries',  c:'var(--c-accent)' },
+                  { v: pad(stats.images,5),                 k:'Frames' },
+                  { v: pad(stats.bursts,4),                 k:'Bursts' },
+                  { v: pad(stats.by_verdict?.keeper||0,4),  k:'Keepers', c:'var(--c-keeper)' },
+                  { v: pad(stats.by_verdict?.review||0,4),  k:'Reviews', c:'var(--c-amber)' },
+                  { v: pad(stats.by_verdict?.reject||0,4),  k:'Rejects',  c:'var(--c-danger)' },
+                ].map(({ v, k, c }) => (
+                  <div key={k} className="sg-stat">
+                    <div className="sg-stat-v" style={{ color: c || 'var(--c-text)' }}>{v}</div>
+                    <div className="sg-stat-k">{k}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Add another roll — secondary action, below the data. */}
+        <div className="sg-card">
+          <h2 className="sg-card-h2">Add another <em>roll</em>.</h2>
           <div className="sg-card-sub">Ingest · scan · measure · catalogue</div>
           <div style={{ display:'flex', gap:10, alignItems:'stretch' }}>
             <div className="sg-folder-display" style={{ flex:1, color: folder ? 'var(--c-text)' : 'var(--c-mute)', fontStyle: folder ? 'normal' : 'italic' }}>
@@ -171,99 +272,6 @@ function LibraryScreen({ stats }) {
           </div>
           {msg && <div className="sg-toast">{msg}</div>}
         </div>
-
-        <div className="sg-card">
-          <div className="sg-card-no">★</div>
-          <h2 className="sg-card-h2">Search by <em>description</em>.</h2>
-          <div className="sg-card-sub">MobileCLIP semantic search · requires embeddings (set SNAPGRADE_ENABLE_SEMANTIC=1 during ingest)</div>
-          <div style={{ display:'flex', gap:10, alignItems:'stretch' }}>
-            <input
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
-              placeholder='e.g. "crowd of people", "blurry photo", "text on a sign"'
-              className="sg-folder-display"
-              style={{ flex:1, color:'var(--c-text)', fontStyle:'normal' }}
-            />
-            <Btn variant="primary" disabled={!query.trim() || searching} onClick={runSearch}>
-              {searching ? 'Searching…' : 'Search'}
-            </Btn>
-          </div>
-          {searchMsg && <div className="sg-toast">{searchMsg}</div>}
-          {results && results.length > 0 && (
-            <div style={{ marginTop:14, display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10 }}>
-              {results.map(r => (
-                <a key={r.image_id} href={`/api/images/${r.image_id}/preview`} target="_blank" rel="noreferrer"
-                   style={{ position:'relative', display:'block', aspectRatio:'1/1', overflow:'hidden', borderRadius:'var(--radius)', border:'1px solid var(--c-border2)' }}>
-                  <img src={r.thumb} alt="" loading="lazy" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
-                  <span style={{ position:'absolute', bottom:4, right:4, fontSize:9, padding:'2px 6px', background:'rgba(0,0,0,0.7)', color:'#fff', borderRadius:'var(--radius)', letterSpacing:'0.05em' }}>
-                    {r.score.toFixed(3)}
-                  </span>
-                </a>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="sg-card">
-          <div className="sg-card-no">ii.</div>
-          <h2 className="sg-card-h2">Your <em>libraries</em>.</h2>
-          <div className="sg-card-sub">Each folder tracked independently · remove without touching disk</div>
-          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-            {MOCK_LIBRARIES.map(lib => {
-              const v = lib.by_verdict || {};
-              return (
-                <div key={lib.id} className="sg-lib-row">
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:20, color:'var(--c-text)', marginBottom:2 }}>{lib.display_name}</div>
-                    <div style={{ fontSize:10, color:'var(--c-mute)', marginBottom:8, wordBreak:'break-all' }}>{lib.root_path}</div>
-                    <div style={{ display:'flex', gap:18, fontSize:11, color:'var(--c-text2)' }}>
-                      <span><b style={{ fontFamily:'var(--font-display)', fontStyle:'italic', color:'var(--c-text)' }}>{lib.image_count}</b> frames</span>
-                      <span style={{ color:'var(--c-keeper)' }}><b>{v.keeper||0}</b> keep</span>
-                      <span style={{ color:'var(--c-amber)' }}><b>{v.review||0}</b> review</span>
-                      <span style={{ color:'var(--c-danger)' }}><b>{v.reject||0}</b> reject</span>
-                    </div>
-                    <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
-                      {Object.keys(lib.models_run || {}).map(m => (
-                        <span key={m} style={{ fontSize:8, letterSpacing:'0.2em', textTransform:'uppercase', padding:'3px 8px', border:'1px solid var(--c-keeper)', color:'var(--c-keeper)', borderRadius:'var(--radius)' }}>{m} ✓</span>
-                      ))}
-                    </div>
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                    <Btn variant="ghost"  style={{ fontSize:9, padding:'6px 12px' }} onClick={() => syncLib(lib.id)}>Sync</Btn>
-                    <Btn variant="danger" style={{ fontSize:9, padding:'6px 12px' }} onClick={() => removeLib(lib.id, lib.display_name)}>Remove</Btn>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {stats && (
-          <div className="sg-card" style={{ padding:0 }}>
-            <div className="sg-card-no">iii.</div>
-            <div style={{ padding:'24px 28px 0' }}>
-              <h2 className="sg-card-h2">State of the <em>library</em>.</h2>
-              <div className="sg-card-sub">Live counts</div>
-            </div>
-            <div className="sg-statgrid">
-              {[
-                { v: pad(stats.libraries,3),              k:'Libraries',  c:'var(--c-accent)' },
-                { v: pad(stats.images,5),                 k:'Frames' },
-                { v: pad(stats.bursts,4),                 k:'Bursts' },
-                { v: pad(stats.by_verdict?.keeper||0,4),  k:'Keepers', c:'var(--c-keeper)' },
-                { v: pad(stats.by_verdict?.review||0,4),  k:'Reviews', c:'var(--c-amber)' },
-                { v: pad(stats.by_verdict?.reject||0,4),  k:'Rejects',  c:'var(--c-danger)' },
-              ].map(({ v, k, c }) => (
-                <div key={k} className="sg-stat">
-                  <div className="sg-stat-v" style={{ color: c || 'var(--c-text)' }}>{v}</div>
-                  <div className="sg-stat-k">{k}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -273,7 +281,21 @@ function LibraryScreen({ stats }) {
 function BurstsScreen() {
   const { MOCK_BURSTS, MOCK_LIBRARIES } = window.SG_DATA;
   const [activeLib, setActiveLib] = useState(null);
-  const [picked, setPicked]       = useState({});
+  // Seed from persisted is_best so a reload reflects prior picks.
+  const [picked, setPicked]       = useState(() => {
+    const seed = {};
+    for (const b of MOCK_BURSTS) {
+      const best = b.images.find(i => i.is_best);
+      if (best) seed[b.burst_id] = best.id;
+    }
+    return seed;
+  });
+  const [pickMsg, setPickMsg]     = useState('');
+  const [compareMode, setCompareMode] = useState('grid');  // grid | 2 | 3
+  // Shared (synced) zoom/pan across all compare panes.
+  const [cmpScale, setCmpScale] = useState(1);
+  const [cmpOff, setCmpOff]     = useState({ x: 0, y: 0 });
+  const cmpDrag = useRef(null);
 
   const libCounts = useMemo(() => {
     const counts = { all: MOCK_BURSTS.length };
@@ -309,6 +331,45 @@ function BurstsScreen() {
     finally { setGrouping(false); }
   }
 
+  // Persist the pick to the backend; optimistic locally, revert on failure.
+  async function pickBest(bid, img) {
+    const prev = picked[bid];
+    setPicked(p => ({ ...p, [bid]: img.id }));
+    setPickMsg('');
+    try {
+      await window.SG_API.setBurstBest(bid, img.id);
+      // Keep in-memory is_best consistent so other views agree without a reload.
+      if (burst) burst.images.forEach(i => { i.is_best = i.id === img.id; });
+    } catch (e) {
+      setPicked(p => ({ ...p, [bid]: prev }));
+      setPickMsg(`could not save pick: ${e.message}`);
+    }
+  }
+
+  // Reset synced zoom when the burst or compare mode changes.
+  useEffect(() => { setCmpScale(1); setCmpOff({ x: 0, y: 0 }); }, [selectedBurst, compareMode]);
+  function cmpWheel(e) {
+    if (compareMode === 'grid') return;
+    e.preventDefault();
+    setCmpScale(s => Math.max(1, Math.min(8, s * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+  }
+  function cmpDown(e) {
+    if (compareMode === 'grid' || cmpScale <= 1) return;
+    cmpDrag.current = { x: e.clientX, y: e.clientY, ox: cmpOff.x, oy: cmpOff.y };
+  }
+  function cmpMove(e) {
+    if (!cmpDrag.current) return;
+    setCmpOff({ x: cmpDrag.current.ox + (e.clientX - cmpDrag.current.x),
+                y: cmpDrag.current.oy + (e.clientY - cmpDrag.current.y) });
+  }
+  function cmpUp() { cmpDrag.current = null; }
+
+  const isCompare = compareMode !== 'grid';
+  const gridCols = compareMode === '2' ? 'repeat(2, 1fr)'
+                 : compareMode === '3' ? 'repeat(3, 1fr)'
+                 : 'repeat(auto-fill, minmax(260px, 1fr))';
+  const imgH = compareMode === '2' ? 400 : compareMode === '3' ? 300 : 180;
+
   return (
     <div style={{ display:'flex', flex:1, minHeight:0, overflow:'hidden', flexDirection:'column' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
@@ -338,26 +399,53 @@ function BurstsScreen() {
         <div className="sg-scroll" style={{ flex:1, padding:'24px 28px' }}>
           {burst && burstImages.length > 0 ? (
             <>
-              <div style={{ display:'flex', alignItems:'baseline', gap:16, marginBottom:20 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:20, flexWrap:'wrap' }}>
                 <h2 style={{ fontFamily:'var(--font-display)', fontSize:32, fontWeight:400, letterSpacing:'-0.01em', margin:0 }}>
                   Burst <em style={{ color:'var(--c-accent)' }}>#{burst.burst_id}</em>
                 </h2>
                 <span style={{ fontSize:10, letterSpacing:'0.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
                   {burstImages.length} frames · compare &amp; pick sharpest
                 </span>
+                <div style={{ flex:1 }} />
+                {/* Compare layout — grid for many frames, 2-up/3-up for close looks
+                    with synced zoom (wheel) + pan (drag). */}
+                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  {[['grid','⊞ Grid'],['2','2-up'],['3','3-up']].map(([m,l]) => (
+                    <Chip key={m} on={compareMode===m} onClick={() => setCompareMode(m)}>{l}</Chip>
+                  ))}
+                  {isCompare && (
+                    <span style={{ fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', fontVariantNumeric:'tabular-nums' }}>
+                      {Math.round(cmpScale*100)}% · wheel zoom
+                    </span>
+                  )}
+                </div>
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:16 }}>
+              {pickMsg && <div className="sg-toast" style={{ marginTop:0, marginBottom:12, color:'var(--c-danger)' }}>{pickMsg}</div>}
+              <div style={{ display:'grid', gridTemplateColumns:gridCols, gap:16 }}>
                 {burstImages.map(img => {
                   const isBest = picked[burst.burst_id] === img.id || (!picked[burst.burst_id] && img.is_best);
                   return (
                     <div key={img.id} style={{ outline: isBest ? '2px solid var(--c-accent)' : '1px solid var(--c-border)', outlineOffset:-1, borderRadius:'var(--radius)', overflow:'hidden', background:'var(--c-panel)', position:'relative' }}>
                       {isBest && (
-                        <div style={{ position:'absolute', top:10, left:10, background:'var(--c-accent)', color:'var(--c-bg)', fontSize:8, letterSpacing:'0.22em', textTransform:'uppercase', padding:'3px 8px', zIndex:2 }}>Best pick</div>
+                        <div style={{ position:'absolute', top:10, left:10, background:'var(--c-accent)', color:'var(--c-bg)', fontSize:8, letterSpacing:'0.22em', textTransform:'uppercase', padding:'3px 8px', zIndex:3 }}>Best pick</div>
                       )}
-                      <img src={img.thumb} alt="" style={{ width:'100%', height:180, objectFit:'cover', display:'block', filter:'contrast(1.04)' }} />
+                      <div
+                        onWheel={cmpWheel} onMouseDown={cmpDown} onMouseMove={cmpMove}
+                        onMouseUp={cmpUp} onMouseLeave={cmpUp}
+                        style={{ height:imgH, overflow:'hidden', background:'#000',
+                                 cursor: isCompare ? (cmpScale>1 ? 'grab' : 'zoom-in') : 'default' }}>
+                        <img src={isCompare ? img.preview : img.thumb} alt=""
+                          onError={e => { if (e.currentTarget.src !== img.thumb) e.currentTarget.src = img.thumb; }}
+                          style={{ width:'100%', height:'100%',
+                                   objectFit: isCompare ? 'contain' : 'cover', display:'block',
+                                   position:'relative', zIndex:1,
+                                   transform: isCompare ? `translate(${cmpOff.x}px, ${cmpOff.y}px) scale(${cmpScale})` : 'none',
+                                   transformOrigin:'center center',
+                                   transition: cmpDrag.current ? 'none' : 'transform .12s ease-out' }} />
+                      </div>
                       <div style={{ padding:'12px 14px' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-                          <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', color:'var(--c-accent)', fontSize:16 }}>№{pad(img.id,4)}</span>
+                          <span style={{ fontFamily:'var(--font-ui)', color:'var(--c-accent)', fontSize:12, fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(img.id,4)}</span>
                           <span style={{ fontSize:9, letterSpacing:'0.2em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</span>
                         </div>
                         <div style={{ marginBottom:10 }}>
@@ -384,7 +472,7 @@ function BurstsScreen() {
                         <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'var(--c-mute)', marginBottom:10 }}>
                           <span>f/{img.f_number}</span><span>{img.exposure_time}</span><span>ISO {img.iso}</span>
                         </div>
-                        <button onClick={() => setPicked(p => ({ ...p, [burst.burst_id]: img.id }))} style={{ width:'100%', padding:'8px', fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', border:`1px solid ${isBest ? 'var(--c-accent)' : 'var(--c-border2)'}`, color: isBest ? 'var(--c-accent)' : 'var(--c-mute)', background: isBest ? 'rgba(193,68,14,0.08)' : 'transparent', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
+                        <button onClick={() => pickBest(burst.burst_id, img)} style={{ width:'100%', padding:'8px', fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', border:`1px solid ${isBest ? 'var(--c-accent)' : 'var(--c-border2)'}`, color: isBest ? 'var(--c-accent)' : 'var(--c-mute)', background: isBest ? 'rgba(193,68,14,0.08)' : 'transparent', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
                           {isBest ? '✓ Picked' : 'Pick this'}
                         </button>
                       </div>
@@ -405,6 +493,35 @@ function BurstsScreen() {
 }
 
 // ── Face Clusters Screen ──────────────────────────────────────────────────────
+// Inline rename of a cluster's label (click the name).
+function ClusterName({ cluster, onRename, big }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(cluster.label);
+  useEffect(() => { setVal(cluster.label); }, [cluster.label]);
+  const commit = () => { setEditing(false); if (val.trim() && val !== cluster.label) onRename(cluster.id, val.trim()); };
+  if (editing) return (
+    <input autoFocus value={val}
+      onChange={e => setVal(e.target.value)}
+      onClick={e => e.stopPropagation()}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setVal(cluster.label); setEditing(false); } }}
+      onBlur={commit}
+      style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize: big ? 26 : 18,
+               color:'var(--c-text)', background:'var(--c-bg)', border:'1px solid var(--c-accent)',
+               borderRadius:'var(--radius)', padding:'2px 8px', width:'100%', boxSizing:'border-box' }} />
+  );
+  return (
+    <span onClick={e => { e.stopPropagation(); setEditing(true); }}
+      title="Click to rename"
+      style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize: big ? 28 : 18,
+               color: cluster.named ? 'var(--c-text)' : 'var(--c-text2)', cursor:'text',
+               borderBottom: '1px dashed transparent' }}
+      onMouseOver={e => e.currentTarget.style.borderBottomColor = 'var(--c-border2)'}
+      onMouseOut={e => e.currentTarget.style.borderBottomColor = 'transparent'}>
+      {cluster.label}{!cluster.named && <span style={{ fontSize: big ? 13 : 10, color:'var(--c-mute)', marginLeft:6, fontStyle:'normal' }}>✎</span>}
+    </span>
+  );
+}
+
 function FacesScreen() {
   const { MOCK_LIBRARIES } = window.SG_DATA;
   const [activeLib, setActiveLib] = useState(null);
@@ -415,7 +532,15 @@ function FacesScreen() {
   const [runMsg, setRunMsg]       = useState('');
   const [threshold, setThreshold] = useState(window.SG_PREFS?.faceThreshold ?? 0.30);
   const [sortMode, setSortMode]   = useState('size_desc');  // size_desc | size_asc
-  useEffect(() => { setExpanded(null); }, [activeLib]);
+  const [mergeSel, setMergeSel]   = useState(null);  // {id,label} target awaiting a source
+  const [preview, setPreview]     = useState(null);  // {faces,clusters} at the slider's threshold
+  const [curateMsg, setCurateMsg] = useState('');
+  const [rotateTick, setRotateTick] = useState(0);   // drives diverse-thumbnail rotation
+  const runThreshold = useRef(threshold);            // threshold the current clusters were built at
+  useEffect(() => { setExpanded(null); setMergeSel(null); }, [activeLib]);
+
+  // Rotate card thumbnails so a 200-photo person's card feels alive.
+  useEffect(() => { const id = setInterval(() => setRotateTick(t => t + 1), 3500); return () => clearInterval(id); }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -425,6 +550,42 @@ function FacesScreen() {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Debounced "≈N clusters at this threshold" preview (no writes).
+  useEffect(() => {
+    if (Math.abs(threshold - runThreshold.current) < 0.005) { setPreview(null); return; }
+    let alive = true;
+    const id = setTimeout(async () => {
+      try { const p = await window.SG_API.previewClusters(threshold); if (alive) setPreview(p); }
+      catch { if (alive) setPreview(null); }
+    }, 350);
+    return () => { alive = false; clearTimeout(id); };
+  }, [threshold]);
+
+  const rename = useCallback(async (cid, label) => {
+    setCurateMsg('');
+    try {
+      await window.SG_API.labelCluster(cid, label);
+      setClusters(cs => cs.map(c => c.id === cid ? { ...c, label, named: true } : c));
+    } catch (e) { setCurateMsg(`rename failed: ${e.message}`); }
+  }, []);
+
+  const doMerge = useCallback(async (into, from) => {
+    setCurateMsg('');
+    try {
+      await window.SG_API.mergeClusters(into, from);
+      setMergeSel(null);
+      await reload();
+    } catch (e) { setCurateMsg(`merge failed: ${e.message}`); }
+  }, [reload]);
+
+  const removeFace = useCallback(async (cid, faceId) => {
+    setCurateMsg('');
+    setClusters(cs => cs.map(c => c.id === cid
+      ? { ...c, thumbs: c.thumbs.filter(t => t.face_id !== faceId), count: Math.max(0, c.count - 1) } : c));
+    try { await window.SG_API.removeFace(faceId); }
+    catch (e) { setCurateMsg(`remove failed: ${e.message}`); reload(); }
+  }, [reload]);
 
   // Poll /api/stats.faces while a run is in flight; reload clusters on finish.
   useEffect(() => {
@@ -445,7 +606,9 @@ function FacesScreen() {
   }, [running, reload]);
 
   async function runClustering() {
-    setRunMsg(''); setRunning(true);
+    if (!confirm('Reclustering rebuilds all groups from scratch — cluster names, merges, and manual fixes are tied to the current grouping and will be lost. Continue?')) return;
+    setRunMsg(''); setRunning(true); setPreview(null);
+    runThreshold.current = threshold;
     try {
       window.SG_API.savePrefs?.({ faceThreshold: threshold });
       await window.SG_API.runFaces({ threshold });
@@ -492,9 +655,15 @@ function FacesScreen() {
             disabled={running}
             style={{ width:140, accentColor:'var(--c-accent)' }}
             title="Cosine similarity threshold for clustering (lower = lumpier)" />
-          <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:16, color:'var(--c-accent)', minWidth:36, textAlign:'right' }}>{threshold.toFixed(2)}</span>
+          <span style={{ fontFamily:'var(--font-ui)', fontSize:14, color:'var(--c-accent)', minWidth:36, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{threshold.toFixed(2)}</span>
+          {preview && (
+            <span style={{ fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-text2)', fontVariantNumeric:'tabular-nums' }}>
+              ≈{preview.clusters} clusters
+            </span>
+          )}
         </div>
         <div style={{ flex:1 }} />
+        {curateMsg && <span className="sg-toast" style={{ marginTop:0, color:'var(--c-danger)' }}>{curateMsg}</span>}
         {runMsg && <span className="sg-toast" style={{ marginTop:0 }}>{runMsg}</span>}
         <Btn variant="primary" disabled={running} onClick={runClustering}>
           {running ? 'Clustering…' : 'Recluster'}
@@ -505,37 +674,55 @@ function FacesScreen() {
           <p className="sg-lede">Faces grouped by similarity across the library. Identify recurring subjects and curate by person.</p>
           {!cluster ? (
             <>
+              {mergeSel && (
+                <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16, padding:'10px 14px',
+                              border:'1px solid var(--c-accent)', borderRadius:'var(--radius)', background:'rgba(193,68,14,0.06)' }}>
+                  <span style={{ fontSize:11, color:'var(--c-text2)' }}>
+                    Merging into <b style={{ color:'var(--c-accent)' }}>{mergeSel.label}</b> — pick the cluster to fold in.
+                  </span>
+                  <button onClick={() => setMergeSel(null)}
+                    style={{ fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-danger)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>cancel ×</button>
+                </div>
+              )}
               {loading ? (
                 <EmptyState>Loading clusters…</EmptyState>
               ) : visibleClusters.length === 0 ? (
                 <EmptyState>No face clusters yet — press "Recluster".</EmptyState>
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:16, marginBottom:32 }}>
-                  {visibleClusters.map(c => (
-                    <button key={c.id} onClick={() => setExpanded(c.id)}
-                      style={{ border:'1px solid var(--c-border)', background:'var(--c-panel)', padding:0, cursor:'pointer', borderRadius:'var(--radius)', overflow:'hidden', transition:'border-color .15s, transform .15s', textAlign:'left' }}
+                  {visibleClusters.map(c => {
+                    const pool = c.thumbs || [];
+                    const start = pool.length > 4 ? (rotateTick % pool.length) : 0;
+                    const shown = pool.length ? [0,1,2,3].map(i => pool[(start + i) % pool.length]) : [];
+                    const isMergeTarget = mergeSel && mergeSel.id === c.id;
+                    return (
+                    <div key={c.id} onClick={() => { if (mergeSel && mergeSel.id !== c.id) doMerge(mergeSel.id, c.id); else setExpanded(c.id); }}
+                      style={{ border:`1px solid ${isMergeTarget ? 'var(--c-accent)' : 'var(--c-border)'}`, background:'var(--c-panel)', padding:0, cursor:'pointer', borderRadius:'var(--radius)', overflow:'hidden', transition:'border-color .15s, transform .15s', textAlign:'left' }}
                       onMouseOver={e => { e.currentTarget.style.borderColor='var(--c-text2)'; e.currentTarget.style.transform='translateY(-2px)'; }}
-                      onMouseOut={e  => { e.currentTarget.style.borderColor='var(--c-border)';  e.currentTarget.style.transform='none'; }}
+                      onMouseOut={e  => { e.currentTarget.style.borderColor= isMergeTarget ? 'var(--c-accent)' : 'var(--c-border)';  e.currentTarget.style.transform='none'; }}
                     >
                       <div style={{ position:'relative', height:160, background:'var(--c-border)', overflow:'hidden' }}>
                         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gridTemplateRows:'1fr 1fr', gap:1, height:'100%' }}>
-                          {c.thumbs.slice(0,4).map(t => (
-                            <img key={t.id} src={t.url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', filter:'saturate(0.85)', minWidth:0, minHeight:0 }} />
+                          {shown.map((t, i) => (
+                            <img key={`${t ? t.id : 'x'}-${i}`} src={t ? t.url : ''} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', position:'relative', zIndex:1, minWidth:0, minHeight:0, transition:'opacity .4s' }} />
                           ))}
                         </div>
-                        <div style={{ position:'absolute', top:8, left:8, padding:'3px 8px', background:'rgba(0,0,0,0.65)', color:'var(--c-accent)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:14, lineHeight:1, borderRadius:'var(--radius)', backdropFilter:'blur(2px)' }}>
+                        <div style={{ position:'absolute', top:8, left:8, padding:'3px 8px', background:'rgba(0,0,0,0.65)', color:'var(--c-accent)', fontFamily:'var(--font-ui)', fontSize:12, lineHeight:1, borderRadius:'var(--radius)', backdropFilter:'blur(2px)', fontVariantNumeric:'tabular-nums' }}>
                           {c.count}
                         </div>
                       </div>
                       <div style={{ padding:'12px 14px' }}>
-                        <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:18, color:'var(--c-text)', marginBottom:4 }}>{c.label}</div>
-                        <div style={{ fontSize:10, color:'var(--c-mute)', display:'flex', justifyContent:'space-between' }}>
-                          <span>{c.count} appearances</span>
-                          <span style={{ color:'var(--c-accent)' }}>View all →</span>
+                        <div style={{ marginBottom:4 }}><ClusterName cluster={c} onRename={rename} /></div>
+                        <div style={{ fontSize:10, color:'var(--c-mute)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                          <span style={{ fontVariantNumeric:'tabular-nums' }}>{c.count} appearances</span>
+                          <button onClick={e => { e.stopPropagation(); setMergeSel(mergeSel && mergeSel.id === c.id ? null : { id: c.id, label: c.label }); }}
+                            style={{ fontSize:9, letterSpacing:'0.14em', textTransform:'uppercase', color: isMergeTarget ? 'var(--c-accent)' : 'var(--c-mute)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>
+                            {isMergeTarget ? 'target ✓' : '⇆ merge'}
+                          </button>
                         </div>
                       </div>
-                    </button>
-                  ))}
+                    </div>
+                  );})}
                 </div>
               )}
             </>
@@ -545,17 +732,23 @@ function FacesScreen() {
               <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:24 }}>
                 <img src={cluster.rep_thumb} alt="" style={{ width:60, height:60, objectFit:'cover', borderRadius:'50%', border:'2px solid var(--c-border2)' }} />
                 <div>
-                  <h2 style={{ fontFamily:'var(--font-display)', fontSize:28, fontWeight:400, margin:'0 0 4px', color:'var(--c-text)' }}>{cluster.label}</h2>
-                  <div style={{ fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase' }}>{cluster.count} appearances across library</div>
+                  <div style={{ marginBottom:4 }}><ClusterName cluster={cluster} onRename={rename} big /></div>
+                  <div style={{ fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', fontVariantNumeric:'tabular-nums' }}>{cluster.count} appearances across library · click the name to rename</div>
                 </div>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:10 }}>
                 {cluster.thumbs.map(t => (
-                  <div key={t.id} style={{ border:'1px solid var(--c-border)', borderRadius:'var(--radius)', overflow:'hidden', background:'var(--c-panel)' }}>
-                    <img src={t.url} alt="" style={{ width:'100%', height:130, objectFit:'cover', display:'block', filter:'contrast(1.03)' }} />
+                  <div key={t.id} style={{ border:'1px solid var(--c-border)', borderRadius:'var(--radius)', overflow:'hidden', background:'var(--c-panel)', position:'relative' }}>
+                    <img src={t.url} alt="" style={{ width:'100%', height:130, objectFit:'cover', display:'block', position:'relative', zIndex:1 }} />
+                    <button onClick={() => removeFace(cluster.id, t.face_id)}
+                      title="Not this person — remove from cluster"
+                      style={{ position:'absolute', top:6, right:6, zIndex:2, width:22, height:22, borderRadius:'50%',
+                               background:'rgba(10,9,7,0.75)', color:'var(--c-danger)', border:'1px solid var(--c-danger)',
+                               cursor:'pointer', fontSize:12, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
                     <div style={{ padding:'8px 10px', fontSize:9, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', display:'flex', justifyContent:'space-between' }}>
-                      <span>№{pad(t.id,4)}</span>
-                      <span style={{ color:'var(--c-keeper)' }}>keeper</span>
+                      <span style={{ fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums' }}>№{pad(t.id,4)}</span>
+                      <a href={`/api/images/${t.image_id}/preview`} target="_blank" rel="noreferrer"
+                         onClick={e => e.stopPropagation()} style={{ color:'var(--c-accent)' }}>open ↗</a>
                     </div>
                   </div>
                 ))}

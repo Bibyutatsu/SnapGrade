@@ -211,6 +211,69 @@ def best_photo_for_cluster(conn: sqlite3.Connection, cluster_id: int) -> dict | 
     }
 
 
+# ── Cluster curation: labels, merge, split, threshold preview ─────────────────
+def get_labels(conn: sqlite3.Connection) -> dict[int, str]:
+    """{cluster_id: label} for all named clusters."""
+    rows = conn.execute("SELECT cluster_id, label FROM cluster_labels").fetchall()
+    return {int(r["cluster_id"]): r["label"] for r in rows}
+
+
+def set_label(conn: sqlite3.Connection, cluster_id: int, label: str) -> None:
+    """Name (or rename) a cluster. Empty label clears the name."""
+    from datetime import datetime as _dt, timezone as _tz
+    label = (label or "").strip()
+    if not label:
+        conn.execute("DELETE FROM cluster_labels WHERE cluster_id=?", (cluster_id,))
+        return
+    conn.execute(
+        "INSERT INTO cluster_labels(cluster_id, label, updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(cluster_id) DO UPDATE SET label=excluded.label, updated_at=excluded.updated_at",
+        (cluster_id, label, _dt.now(_tz.utc).isoformat()),
+    )
+
+
+def merge_clusters(conn: sqlite3.Connection, into: int, frm: int) -> int:
+    """Fold cluster `frm` into `into`. Returns the number of faces moved. Carries
+    `frm`'s label to `into` only if `into` is unnamed."""
+    if into == frm:
+        return 0
+    with db.transaction(conn):
+        cur = conn.execute(
+            "UPDATE faces SET cluster_id=? WHERE cluster_id=?", (into, frm)
+        )
+        labels = get_labels(conn)
+        if frm in labels and into not in labels:
+            set_label(conn, into, labels[frm])
+        conn.execute("DELETE FROM cluster_labels WHERE cluster_id=?", (frm,))
+    return cur.rowcount or 0
+
+
+def set_face_cluster(conn: sqlite3.Connection, face_id: int, cluster_id: int | None) -> bool:
+    """Reassign a single face to another cluster, or remove it from clustering
+    (cluster_id=None). Returns False if the face id is unknown."""
+    row = conn.execute("SELECT 1 FROM faces WHERE id=?", (face_id,)).fetchone()
+    if not row:
+        return False
+    conn.execute("UPDATE faces SET cluster_id=? WHERE id=?", (cluster_id, face_id))
+    return True
+
+
+def preview_cluster_count(conn: sqlite3.Connection, threshold: float) -> dict[str, int]:
+    """Cluster count at a candidate threshold WITHOUT persisting — powers the
+    '≈N clusters' slider hint. Reuses the same HNSW/greedy path as cluster()."""
+    _ensure_schema(conn)
+    rows = conn.execute("SELECT embedding FROM faces").fetchall()
+    if not rows:
+        return {"faces": 0, "clusters": 0}
+    embs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+    try:
+        import hnswlib  # noqa: F401
+        cluster_ids = _hnsw_cluster(embs, threshold)
+    except Exception:
+        cluster_ids = _greedy_cluster(embs, threshold)
+    return {"faces": len(embs), "clusters": len(set(cluster_ids))}
+
+
 class _UnionFind:
     def __init__(self, n: int) -> None:
         self.parent = list(range(n))

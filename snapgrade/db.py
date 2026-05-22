@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS image_embeddings (
     dim INTEGER NOT NULL,
     embedding BLOB NOT NULL     -- float32, L2-normalized
 );
+
+-- User-assigned names for face clusters. Keyed on the cluster_id integer, which
+-- is reassigned by a full re-cluster — so labels belong to the current
+-- clustering generation (the UI warns before reclustering).
+CREATE TABLE IF NOT EXISTS cluster_labels (
+    cluster_id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -225,6 +234,25 @@ def delete_library(conn: sqlite3.Connection, library_id: int) -> dict[str, int]:
         conn.execute("DELETE FROM libraries WHERE id=?", (library_id,))
     cleanup_orphan_bursts(conn)
     return counts
+
+
+def set_burst_best(conn: sqlite3.Connection, burst_id: int, image_id: int) -> bool:
+    """Mark `image_id` as the best pick of `burst_id`. Returns False if the image
+    isn't a member of the burst. Only moves the `is_best` flag — verdicts are the
+    user's call here (unlike the auto-demotion group_bursts does on regroup)."""
+    member = conn.execute(
+        "SELECT 1 FROM burst_members WHERE burst_id=? AND image_id=?",
+        (burst_id, image_id),
+    ).fetchone()
+    if not member:
+        return False
+    with transaction(conn):
+        conn.execute("UPDATE burst_members SET is_best=0 WHERE burst_id=?", (burst_id,))
+        conn.execute(
+            "UPDATE burst_members SET is_best=1 WHERE burst_id=? AND image_id=?",
+            (burst_id, image_id),
+        )
+    return True
 
 
 def cleanup_orphan_bursts(conn: sqlite3.Connection) -> int:

@@ -250,7 +250,11 @@ function MetricTags({ image }) {
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
+function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], activeLib, setActiveLib }) {
+  // The Triage library picker (formerly the standalone LibRail) folds into the
+  // nav here: when on Triage and expanded, the libraries appear as indented
+  // nav rows that drive `activeLib`, reclaiming a whole vertical strip.
+  const libsAll = libraries.reduce((a, l) => a + (l.image_count || 0), 0);
   return (
     <aside className="sg-sidebar" style={{ width: collapsed ? 56 : 220 }}>
       <button className="sg-collapse-btn" onClick={onToggle} title={collapsed ? 'Expand' : 'Collapse'}>
@@ -262,18 +266,35 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
           <div className="sg-brand-sub">A local culling apparatus</div>
         </>
       )}
-      <nav className="sg-nav">
+      <nav className="sg-nav sg-scroll" style={{ overflowX: 'hidden' }}>
         {TABS.map(([k, label, n]) => (
-          <button
-            key={k}
-            className={`sg-nav-btn ${tab === k ? 'on' : ''}`}
-            onClick={() => setTab(k)}
-            title={collapsed ? label : ''}
-            style={{ justifyContent: collapsed ? 'center' : 'flex-start' }}
-          >
-            <span className="sg-nav-n">{n}.</span>
-            {!collapsed && <span className="sg-nav-label">{label}</span>}
-          </button>
+          <React.Fragment key={k}>
+            <button
+              className={`sg-nav-btn ${tab === k ? 'on' : ''}`}
+              onClick={() => setTab(k)}
+              title={collapsed ? label : ''}
+              style={{ justifyContent: collapsed ? 'center' : 'flex-start' }}
+            >
+              <span className="sg-nav-n">{n}.</span>
+              {!collapsed && <span className="sg-nav-label">{label}</span>}
+            </button>
+            {/* Triage library group */}
+            {k === 'triage' && tab === 'triage' && !collapsed && setActiveLib && (
+              <div className="sg-nav-libs">
+                <button className={`sg-nav-lib ${activeLib === null ? 'on' : ''}`}
+                  onClick={() => setActiveLib(null)}>
+                  <span>All folders</span><span className="sg-nav-lib-n">{libsAll}</span>
+                </button>
+                {libraries.map(l => (
+                  <button key={l.id} className={`sg-nav-lib ${activeLib === l.id ? 'on' : ''}`}
+                    onClick={() => setActiveLib(l.id)} title={l.display_name || l.root_path}>
+                    <span>{l.display_name || l.root_path.split('/').pop()}</span>
+                    <span className="sg-nav-lib-n">{l.image_count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </React.Fragment>
         ))}
       </nav>
       {!collapsed && stats && (
@@ -338,10 +359,14 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle }) {
 }
 
 // ── Theme picker (lives in topbar) ────────────────────────────────────────────
+// Labels set expectations about *what changes*: "Cinematic" carries the grain /
+// vignette / sprocket / serif treatment; "Utility" drops them for a flat,
+// neutral working surface. (Themes are functionally the same dark-film /
+// dark-modern / light-pro tokens underneath.)
 const THEMES = [
-  { id: 'dark-film',   label: 'Film Lab',  swatch: ['#0a0907', '#c1440e', '#d4a017'] },
-  { id: 'dark-modern', label: 'Modern',    swatch: ['#0f0f12', '#e05a35', '#42b878'] },
-  { id: 'light-pro',   label: 'Light Pro', swatch: ['#f0ede8', '#c1440e', '#3d6e28'] },
+  { id: 'dark-film',   label: 'Cinematic',     swatch: ['#0a0907', '#c1440e', '#d4a017'] },
+  { id: 'dark-modern', label: 'Modern',        swatch: ['#0f0f12', '#e05a35', '#42b878'] },
+  { id: 'light-pro',   label: 'Utility (Light)', swatch: ['#f0ede8', '#c1440e', '#3d6e28'] },
 ];
 
 function ThemePicker({ theme, onThemeChange }) {
@@ -557,7 +582,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
       {!compact && (
         <div className="sg-detail-preview" onClick={onOpenLightbox}
              style={{ cursor: 'zoom-in', position: 'relative' }}>
-          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block', filter: 'contrast(1.04)' }}
+          <img src={m.thumb} alt="" style={{ width: '100%', display: 'block', position: 'relative', zIndex: 1 }}
                onError={e => { if (e.currentTarget.src !== m.preview) e.currentTarget.src = m.preview; }} />
           {showBoxes && <SubjectOverlay subjects={m.metrics?.subjects} decoded={m.metrics?.decoded_size} />}
           <div className="sg-corners" />
@@ -696,8 +721,43 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
+function lbZoomBtn(active) {
+  return {
+    padding: '5px 11px', fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase',
+    fontFamily: 'var(--font-ui)', borderRadius: 'var(--radius)',
+    background: 'rgba(10,9,7,0.7)', cursor: 'pointer',
+    border: `1px solid ${active ? 'var(--c-accent)' : 'var(--c-border2)'}`,
+    color: active ? 'var(--c-accent)' : 'var(--c-text)',
+  };
+}
+
 function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
   const [showBoxes, setShowBoxes] = useState(true);
+  // Zoom/pan for pixel-level sharpness review (the single biggest functional
+  // gap before). The whole image+overlay wrapper is transformed uniformly, so
+  // subject/OCR boxes stay registered at any zoom.
+  const [scale, setScale]   = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragRef = useRef(null);
+
+  // Reset when the frame changes.
+  useEffect(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, [image && image.id]);
+
+  // Approximate the natural-pixel ("1:1") scale from the fit-rendered size.
+  const oneToOne = useCallback(() => {
+    const W = image?.width || 6016, H = image?.height || 4016;
+    const vw = window.innerWidth * 0.86, vh = window.innerHeight * 0.78;
+    const ar = W / H;
+    const renderedW = (vw / vh > ar) ? vh * ar : vw;
+    return Math.max(1, Math.min(8, W / renderedW));
+  }, [image]);
+
+  const reset = useCallback(() => { setScale(1); setOffset({ x: 0, y: 0 }); }, []);
+  const toggleZoom = useCallback(() => {
+    setScale(s => (s > 1 ? 1 : oneToOne()));
+    setOffset({ x: 0, y: 0 });
+  }, [oneToOne]);
+
   useEffect(() => {
     const handler = e => {
       if (e.key === 'Escape')                      onClose();
@@ -706,13 +766,32 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
       if (e.key === 'z') onVerdict('keeper', null);
       if (e.key === 'c') onVerdict('review', null);
       if (e.key === 'x') onVerdict('reject', null);
+      if (e.key === '0' || e.key === 'f') reset();
+      if (e.key === '1') toggleZoom();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose, onPrev, onNext, onVerdict]);
+  }, [onClose, onPrev, onNext, onVerdict, reset, toggleZoom]);
+
+  function onWheel(e) {
+    e.preventDefault();
+    setScale(s => Math.max(1, Math.min(8, s * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+  }
+  function onMouseDown(e) {
+    if (scale <= 1) return;
+    e.preventDefault();
+    dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+  }
+  function onMouseMove(e) {
+    if (!dragRef.current) return;
+    setOffset({ x: dragRef.current.ox + (e.clientX - dragRef.current.x),
+                y: dragRef.current.oy + (e.clientY - dragRef.current.y) });
+  }
+  function endDrag() { dragRef.current = null; }
 
   if (!image) return null;
   const idx = items ? items.findIndex(i => i.id === image.id) : -1;
+  const zoomed = scale > 1;
 
   return (
     <div className="sg-lightbox" onClick={onClose}>
@@ -721,22 +800,46 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
       <button className="sg-lb-nav next" onClick={e => { e.stopPropagation(); onNext(); }}>›</button>
 
       <div className="sg-lb-content" onClick={e => e.stopPropagation()}>
-        {/* Fixed-size viewport (86vw × 78vh). ImageWithOverlays handles
-            objectFit:contain + accurately-positioned bbox / OCR overlays. */}
-        <div style={{ position: 'relative', width: '86vw', height: '78vh' }}>
-          <ImageWithOverlays
-            src={image.preview}
-            fallbackSrc={image.thumb}
-            subjects={image.metrics?.subjects}
-            decoded={image.metrics?.decoded_size}
-            ocr={image.ocr}
-            naturalSize={[image.width || 6016, image.height || 4016]}
-            showBoxes={showBoxes}
-            imgStyle={{ boxShadow: '0 30px 80px rgba(0,0,0,0.9)', border: '1px solid var(--c-border)' }}
-          />
+        {/* Fixed-size viewport (86vw × 78vh). The inner wrapper is uniformly
+            transformed for zoom/pan so ImageWithOverlays' contain-fit boxes stay
+            registered. Wheel = zoom, drag = pan (when zoomed). */}
+        <div
+          onWheel={onWheel}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={endDrag}
+          onMouseLeave={endDrag}
+          onDoubleClick={toggleZoom}
+          style={{ position: 'relative', width: '86vw', height: '78vh', overflow: 'hidden',
+                   cursor: zoomed ? (dragRef.current ? 'grabbing' : 'grab') : 'zoom-in' }}>
+          <div style={{ position: 'absolute', inset: 0,
+                        transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                        transformOrigin: 'center center',
+                        transition: dragRef.current ? 'none' : 'transform .12s ease-out' }}>
+            <ImageWithOverlays
+              src={image.preview}
+              fallbackSrc={image.thumb}
+              subjects={image.metrics?.subjects}
+              decoded={image.metrics?.decoded_size}
+              ocr={image.ocr}
+              naturalSize={[image.width || 6016, image.height || 4016]}
+              showBoxes={showBoxes && !zoomed}
+              imgStyle={{ boxShadow: '0 30px 80px rgba(0,0,0,0.9)', border: '1px solid var(--c-border)',
+                          imageRendering: zoomed ? 'auto' : 'auto' }}
+            />
+          </div>
+          {/* Zoom controls */}
+          <div style={{ position:'absolute', bottom:14, right:14, display:'flex', gap:6, zIndex:3 }}
+               onClick={e => e.stopPropagation()}>
+            <button onClick={toggleZoom} style={lbZoomBtn(zoomed)}>{zoomed ? 'Fit' : '1:1'}</button>
+            <span style={{ ...lbZoomBtn(false), cursor:'default', fontVariantNumeric:'tabular-nums' }}>
+              {Math.round(scale * 100)}%
+            </span>
+          </div>
         </div>
         <div className="sg-lb-meta">
-          <h4>
+          <h4 style={{ fontFamily: 'var(--font-ui)', fontStyle: 'normal', fontSize: 15,
+                       fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>
             №{pad(image.id, 4)}{' '}
             {idx >= 0 && items && (
               <span style={{ fontSize: 12, color: 'var(--c-mute)' }}>· {idx + 1}/{items.length}</span>

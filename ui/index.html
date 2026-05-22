@@ -29,6 +29,11 @@
   --font-ui:      "JetBrains Mono", ui-monospace, monospace;
   --font-display: "Instrument Serif", Georgia, serif;
   --grid-cols: repeat(auto-fill, minmax(210px, 1fr));
+  /* Two microtype roles, picked to replace the prior 7/8/9/10px ×
+     0.18–0.32em sprawl. --cap = uppercase tracked caption (section/chip
+     headers); --lbl = glanceable field label sitting next to a data value. */
+  --cap-size: 8px;  --cap-track: .24em;
+  --lbl-size: 11px; --lbl-track: .02em;
 }
 html.dark-modern {
   --c-bg:      #0f0f12;
@@ -78,6 +83,10 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--c-accent); text-decoration: none; }
 
+/* One keyboard-focus affordance everywhere — most controls previously fell back
+   to the browser default (or none). :focus-visible keeps it off mouse clicks. */
+:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
 /* ── GRAIN OVERLAY (dark-film only) ─────────────────────────────────────────── */
 #sg-grain {
   position: fixed; inset: 0; pointer-events: none; z-index: 9999;
@@ -90,6 +99,13 @@ body::before {
 }
 html.light-pro body::before { display: none; }
 html.dark-modern body::before { opacity: .5; }
+
+/* Photo-bearing panes paint ABOVE the grain (9999) and vignette (9998) so the
+   atmosphere stays on the chrome (sidebar, topbar, cards) but never composites
+   over a photo — neither the overlay-blend micro-contrast nor the corner
+   vignette can disguise soft focus or bias a corner thumbnail darker. The
+   lightbox (10000, rendered later in the DOM) still layers above these. */
+.sg-grid, .sg-detail, .sg-scroll { position: relative; z-index: 10000; }
 
 /* ── SHELL ──────────────────────────────────────────────────────────────────── */
 .sg-shell {
@@ -112,18 +128,13 @@ html.dark-modern body::before { opacity: .5; }
   position: relative; flex-shrink: 0;
   transition: width .18s ease;
 }
-html.dark-film .sg-sidebar::before {
-  content: ""; position: absolute;
-  left: 7px; top: 0; bottom: 0; width: 11px;
+/* Sprocket motif moved off the load-bearing nav (it ate ~22px and pulse-noised
+   the buttons at the moment of action) onto the topbar's bottom edge, where it's
+   pure decoration over no interactive target. */
+html.dark-film .sg-topbar::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
   background-image: repeating-linear-gradient(
-    180deg, transparent 0 17px, var(--c-bg) 17px 21px, transparent 21px 38px
-  );
-}
-html.dark-film .sg-sidebar::after {
-  content: ""; position: absolute;
-  left: 5px; top: 0; bottom: 0; width: 15px;
-  background-image: repeating-linear-gradient(
-    180deg, transparent 0 24px, rgba(236,229,211,.025) 24px 30px
+    90deg, transparent 0 17px, var(--c-bg) 17px 21px, transparent 21px 38px
   );
   pointer-events: none;
 }
@@ -139,7 +150,7 @@ html.dark-film .sg-sidebar::after {
 }
 .sg-brand em { color: var(--c-accent); font-style: normal; }
 .sg-brand-sub {
-  font-size: 8px; letter-spacing: .32em;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
   text-transform: uppercase; color: var(--c-mute); margin-bottom: 28px;
 }
 .sg-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; }
@@ -166,6 +177,22 @@ html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
 }
 .sg-nav-btn.on .sg-nav-n { color: var(--c-accent); }
 .sg-nav-label { overflow: hidden; text-overflow: ellipsis; }
+.sg-nav-libs {
+  display: flex; flex-direction: column; gap: 1px;
+  margin: 2px 0 6px 0; padding-left: 22px;
+  border-left: 1px solid var(--c-border); margin-left: 5px;
+}
+.sg-nav-lib {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 6px 8px 6px 0; background: transparent; border: none;
+  cursor: pointer; color: var(--c-text2); font-family: var(--font-ui);
+  font-size: 11px; letter-spacing: 0.01em; text-align: left;
+  transition: color .12s;
+}
+.sg-nav-lib:hover { color: var(--c-text); }
+.sg-nav-lib.on { color: var(--c-accent); }
+.sg-nav-lib span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-nav-lib-n { color: var(--c-mute); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .sg-sidebar-foot {
   margin-top: auto; padding-top: 16px;
   border-top: 1px dashed var(--c-border2);
@@ -211,6 +238,7 @@ html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
   padding: 16px 32px 12px;
   border-bottom: 1px solid var(--c-border);
   background: var(--c-bg); flex-shrink: 0;
+  position: relative;
 }
 html.light-pro .sg-topbar {
   background: var(--c-panel);
@@ -260,7 +288,7 @@ html.light-pro .sg-card-no { background: var(--c-bg); }
 }
 .sg-card-h2 em { color: var(--c-accent); font-style: italic; }
 .sg-card-sub {
-  font-size: 9px; letter-spacing: .22em;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
   text-transform: uppercase; color: var(--c-mute); margin-bottom: 18px;
 }
 .sg-folder-display {
@@ -275,7 +303,7 @@ html.light-pro .sg-card-no { background: var(--c-bg); }
   display: flex; flex-direction: column; gap: 8px; border-radius: var(--radius);
 }
 .sg-model-label {
-  font-size: 8px; letter-spacing: .28em;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
   text-transform: uppercase; color: var(--c-mute); margin-bottom: 4px;
 }
 .sg-lib-row {
@@ -293,12 +321,13 @@ html.light-pro .sg-card-no { background: var(--c-bg); }
 }
 .sg-stat:last-child { border-right: 0; }
 .sg-stat-v {
-  font-family: var(--font-display); font-size: 40px;
-  line-height: 1; color: var(--c-text);
+  font-family: var(--font-ui); font-size: 30px; font-weight: 500;
+  line-height: 1; color: var(--c-text); font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 .sg-stat-k {
-  font-size: 8px; letter-spacing: .28em;
-  text-transform: uppercase; color: var(--c-mute); margin-top: 6px;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
+  text-transform: uppercase; color: var(--c-mute); margin-top: 8px;
 }
 .sg-toast {
   font-size: 11px; color: var(--c-amber);
@@ -320,7 +349,7 @@ html.light-pro .sg-card-no { background: var(--c-bg); }
   background: var(--c-panel2); overflow-y: auto; padding: 14px 0;
 }
 .sg-lib-rail-head {
-  font-size: 8px; letter-spacing: .28em; text-transform: uppercase;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track); text-transform: uppercase;
   color: var(--c-mute); padding: 4px 18px 10px;
   border-bottom: 1px solid var(--c-border); margin-bottom: 4px;
 }
@@ -422,8 +451,8 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   border-left: 2px solid var(--c-accent);
 }
 .sg-detail-label {
-  font-size: 8px; letter-spacing: .24em;
-  text-transform: uppercase; color: var(--c-mute); margin-bottom: 6px;
+  font-size: var(--lbl-size); letter-spacing: var(--lbl-track);
+  text-transform: none; color: var(--c-text2); margin-bottom: 6px;
 }
 .sg-metrics-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
@@ -432,12 +461,13 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
 }
 .sg-metric { background: var(--c-panel); padding: 10px 12px; }
 .sg-metric-label {
-  font-size: 7px; letter-spacing: .24em; text-transform: uppercase;
-  color: var(--c-mute); margin-bottom: 4px;
+  font-size: var(--lbl-size); letter-spacing: var(--lbl-track);
+  text-transform: none; color: var(--c-text2); margin-bottom: 4px;
 }
 .sg-metric-val {
-  font-family: var(--font-display); font-style: italic;
-  font-size: 22px; line-height: 1; color: var(--c-text);
+  font-family: var(--font-ui); font-weight: 500;
+  font-size: 15px; line-height: 1.1; color: var(--c-text);
+  font-variant-numeric: tabular-nums;
 }
 .sg-reasons {
   font-family: var(--font-display); font-style: italic;

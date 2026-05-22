@@ -236,8 +236,8 @@ function FSlider({ label, value, min, max, step, onChange, fmt }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-        <span style={{ fontSize:10, color:'var(--c-text2)' }}>{label}</span>
-        <span style={{ fontSize:11, fontFamily:'var(--font-display)', fontStyle:'italic',
+        <span style={{ fontSize:11, color:'var(--c-text2)' }}>{label}</span>
+        <span style={{ fontSize:12, fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums',
                        color: isDefault ? 'var(--c-mute)' : 'var(--c-accent)' }}>
           {fmt ? fmt(value) : value}
         </span>
@@ -252,8 +252,8 @@ function FSlider({ label, value, min, max, step, onChange, fmt }) {
 
 function FLabel({ children }) {
   return (
-    <div style={{ fontSize:8, letterSpacing:'0.22em', textTransform:'uppercase',
-                  color:'var(--c-mute)', marginBottom:6, marginTop:10 }}>{children}</div>
+    <div style={{ fontSize:'var(--lbl-size)', letterSpacing:'var(--lbl-track)',
+                  color:'var(--c-text2)', marginBottom:6, marginTop:10 }}>{children}</div>
   );
 }
 
@@ -307,8 +307,8 @@ function Histogram({ values, threshold, onChange, label, accent = 'var(--c-keepe
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4 }}>
-        <span style={{ fontSize:10, color:'var(--c-text2)' }}>{label}</span>
-        <span style={{ fontSize:11, fontFamily:'var(--font-display)', fontStyle:'italic',
+        <span style={{ fontSize:11, color:'var(--c-text2)' }}>{label}</span>
+        <span style={{ fontSize:12, fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums',
                        color: threshold === 0 ? 'var(--c-mute)' : 'var(--c-accent)' }}>
           {threshold === 0 ? 'any' : `≥${Math.round(threshold * 100)}%`}
         </span>
@@ -360,7 +360,7 @@ function Histogram({ values, threshold, onChange, label, accent = 'var(--c-keepe
 // ── TimelineScrubber: capture-time density + two draggable handles ────────────
 // Bins frames into a 60-cell histogram of capture_time; the two handles drive
 // date_from / date_to. Drag to the very edge to clear that bound.
-function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
+function TimelineScrubber({ images, dateFrom, dateTo, onChange, compact = false }) {
   const ref = useRef(null);
   const dragRef = useRef(null);  // 'from' | 'to' | null
   const onChangeRef = useRef(onChange);
@@ -431,7 +431,16 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
     };
   }, [minT, span, SUB_DAY]);
 
-  if (dated.length < 2 || !span) return null;
+  if (dated.length < 2 || !span) {
+    // In the filter panel we keep a stable placeholder rather than vanishing —
+    // the appearing/disappearing bar used to shift the whole layout by ~60px.
+    if (compact) return (
+      <div style={{ fontSize:11, color:'var(--c-mute)', padding:'2px 0 4px' }}>
+        No dated frames to scrub.
+      </div>
+    );
+    return null;
+  }
 
   function onBgMouseDown(e) {
     if (!ref.current) return;
@@ -452,12 +461,24 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
   const filterActive = !!(dateFrom || dateTo);
 
   return (
-    <div style={{ padding:'8px 18px 6px', borderBottom:'1px solid var(--c-border)',
-                  background:'var(--c-panel2)', flexShrink:0,
-                  display:'flex', alignItems:'center', gap:16 }}>
-      <div style={{ fontSize:8, letterSpacing:'0.28em', textTransform:'uppercase',
+    <div style={ compact
+        ? { display:'flex', flexDirection:'column', gap:6 }
+        : { padding:'8px 18px 6px', borderBottom:'1px solid var(--c-border)',
+            background:'var(--c-panel2)', flexShrink:0,
+            display:'flex', alignItems:'center', gap:16 } }>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                    fontSize: compact ? 'var(--cap-size)' : 8,
+                    letterSpacing:'var(--cap-track)', textTransform:'uppercase',
                     color: filterActive ? 'var(--c-accent)' : 'var(--c-mute)',
-                    fontFamily:'var(--font-ui)', flexShrink:0, width:70 }}>Timeline</div>
+                    fontFamily:'var(--font-ui)', flexShrink:0, width: compact ? 'auto' : 70 }}>
+        <span>Timeline</span>
+        {compact && filterActive && (
+          <button onClick={() => onChange({ from: '', to: '' })}
+            style={{ fontSize:'var(--cap-size)', letterSpacing:'0.14em', textTransform:'uppercase',
+                     color:'var(--c-danger)', background:'none', border:'none',
+                     cursor:'pointer', fontFamily:'var(--font-ui)' }}>reset ×</button>
+        )}
+      </div>
 
       <div style={{ flex:1, position:'relative' }}>
         <div ref={ref} onMouseDown={onBgMouseDown}
@@ -519,7 +540,7 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange }) {
         </div>
       </div>
 
-      {filterActive && (
+      {!compact && filterActive && (
         <button onClick={() => onChange({ from: '', to: '' })}
           style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase',
                    color:'var(--c-danger)', background:'none', border:'none',
@@ -547,6 +568,10 @@ const NAMED_HUES = [
 
 function HuePicker({ anchors, tolerance, minSat, onChange }) {
   const stripRef = useRef(null);
+  // The named circles cover ~90% of uses; the freeform strip + tolerance/
+  // saturation sliders live behind a disclosure so the panel doesn't present a
+  // 4-control cliff up front.
+  const [advanced, setAdvanced] = useState(anchors.some(h => !NAMED_HUES.some(n => n.h === h)));
   function addAnchorAt(clientX) {
     const rect = stripRef.current.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
@@ -571,35 +596,6 @@ function HuePicker({ anchors, tolerance, minSat, onChange }) {
             }}
             onMouseOver={e => e.currentTarget.style.transform = 'scale(1.15)'}
             onMouseOut={e  => e.currentTarget.style.transform = 'scale(1)'}
-          />
-        ))}
-      </div>
-
-      {/* Continuous hue strip */}
-      <div style={{ fontSize: 8, color: 'var(--c-mute)', letterSpacing: '0.2em',
-                    textTransform: 'uppercase', marginBottom: 4 }}>
-        Or click strip to pin a custom hue
-      </div>
-      <div ref={stripRef}
-        onClick={e => addAnchorAt(e.clientX)}
-        style={{
-          position: 'relative', height: 24, marginBottom: 4, cursor: 'crosshair',
-          borderRadius: 'var(--radius)',
-          background: 'linear-gradient(to right, hsl(0,80%,50%), hsl(30,90%,55%), hsl(60,85%,55%), hsl(120,55%,45%), hsl(180,55%,45%), hsl(210,70%,55%), hsl(270,55%,55%), hsl(330,70%,55%), hsl(360,80%,50%))',
-          border: '1px solid var(--c-border)',
-        }}
-      >
-        {anchors.map((h, i) => (
-          <button key={i}
-            onClick={e => { e.stopPropagation(); removeAnchor(i); }}
-            title={`${h}° · click to remove`}
-            style={{
-              position: 'absolute', top: -3, bottom: -3,
-              left: `${(h / 360) * 100}%`, transform: 'translateX(-50%)',
-              width: 8, padding: 0, background: `hsl(${h},80%,55%)`,
-              border: '2px solid var(--c-bg)', borderRadius: 2, cursor: 'pointer',
-              boxShadow: '0 0 0 1px var(--c-accent)',
-            }}
           />
         ))}
       </div>
@@ -632,21 +628,62 @@ function HuePicker({ anchors, tolerance, minSat, onChange }) {
         </div>
       )}
 
-      {/* Tolerance + saturation sliders */}
-      <div style={{ marginTop: 12 }}>
-        <FSlider label="Hue tolerance" value={tolerance} min={5} max={90} step={5}
-          onChange={v => onChange({ tolerance: v })}
-          fmt={v => `±${v}°`} />
-        <FSlider label="Min saturation" value={minSat} min={0} max={0.6} step={0.05}
-          onChange={v => onChange({ hue_min_sat: v })}
-          fmt={v => v === 0 ? 'any' : `≥${Math.round(v * 100)}%`} />
-      </div>
+      {/* Advanced disclosure: freeform hue strip + tolerance/saturation */}
+      <button onClick={() => setAdvanced(a => !a)}
+        style={{ marginTop:10, display:'flex', alignItems:'center', gap:6,
+                 background:'none', border:'none', cursor:'pointer', padding:0,
+                 fontSize:'var(--cap-size)', letterSpacing:'var(--cap-track)',
+                 textTransform:'uppercase', color:'var(--c-mute)', fontFamily:'var(--font-ui)' }}>
+        <span style={{ display:'inline-block', transition:'transform .15s',
+                       transform: advanced ? 'none' : 'rotate(-90deg)' }}>▾</span>
+        Advanced — custom hue &amp; tolerance
+      </button>
+
+      {advanced && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize:'var(--cap-size)', color:'var(--c-mute)',
+                        letterSpacing:'var(--cap-track)', textTransform:'uppercase', marginBottom:4 }}>
+            Click strip to pin a custom hue
+          </div>
+          <div ref={stripRef}
+            onClick={e => addAnchorAt(e.clientX)}
+            style={{
+              position: 'relative', height: 24, marginBottom: 4, cursor: 'crosshair',
+              borderRadius: 'var(--radius)',
+              background: 'linear-gradient(to right, hsl(0,80%,50%), hsl(30,90%,55%), hsl(60,85%,55%), hsl(120,55%,45%), hsl(180,55%,45%), hsl(210,70%,55%), hsl(270,55%,55%), hsl(330,70%,55%), hsl(360,80%,50%))',
+              border: '1px solid var(--c-border)',
+            }}
+          >
+            {anchors.map((h, i) => (
+              <button key={i}
+                onClick={e => { e.stopPropagation(); removeAnchor(i); }}
+                title={`${h}° · click to remove`}
+                style={{
+                  position: 'absolute', top: -3, bottom: -3,
+                  left: `${(h / 360) * 100}%`, transform: 'translateX(-50%)',
+                  width: 8, padding: 0, background: `hsl(${h},80%,55%)`,
+                  border: '2px solid var(--c-bg)', borderRadius: 2, cursor: 'pointer',
+                  boxShadow: '0 0 0 1px var(--c-accent)',
+                }}
+              />
+            ))}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <FSlider label="Hue tolerance" value={tolerance} min={5} max={90} step={5}
+              onChange={v => onChange({ tolerance: v })}
+              fmt={v => `±${v}°`} />
+            <FSlider label="Min saturation" value={minSat} min={0} max={0.6} step={0.05}
+              onChange={v => onChange({ hue_min_sat: v })}
+              fmt={v => v === 0 ? 'any' : `≥${Math.round(v * 100)}%`} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── FilterPanel ───────────────────────────────────────────────────────────────
-function FilterPanel({ filters: f, setFilters, images, onClose }) {
+function FilterPanel({ filters: f, setFilters, images, onClose, onTimelineChange }) {
   const upd    = useCallback((k, v) => setFilters(prev => ({ ...prev, [k]: v })), [setFilters]);
   const toggle = useCallback(k => setFilters(prev => ({ ...prev, [k]: !prev[k] })), [setFilters]);
 
@@ -678,6 +715,26 @@ function FilterPanel({ filters: f, setFilters, images, onClose }) {
       {/* Body */}
       <div className="sg-scroll" style={{ flex:1 }}>
 
+        {/* Timeline scrubber — folded in here (was a third horizontal bar in the
+            main column that appeared/disappeared with the data). */}
+        <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--c-border)' }}>
+          <TimelineScrubber compact images={images}
+            dateFrom={f.date_from} dateTo={f.date_to}
+            onChange={onTimelineChange || (() => {})} />
+        </div>
+
+        {/* Permanent sharpness cull — the single most-used control, promoted out
+            of the collapsible "Quality scores" so it's always one drag away. */}
+        <div style={{ padding:'14px 16px 4px', borderBottom:'1px solid var(--c-border)' }}>
+          <Histogram
+            label="Sharpness cull"
+            values={images.map(i => i.sharpness ?? 0)}
+            threshold={f.sharpness_min}
+            onChange={v => upd('sharpness_min', v)}
+            accent="var(--c-keeper)"
+          />
+        </div>
+
         {/* Stars */}
         <FSection title="Stars" active={f.stars_min > 0}>
           <FLabel>Minimum rating</FLabel>
@@ -693,15 +750,8 @@ function FilterPanel({ filters: f, setFilters, images, onClose }) {
           </div>
         </FSection>
 
-        {/* Quality scores */}
-        <FSection title="Quality scores" active={f.sharpness_min > 0 || f.aesthetic_min > 0}>
-          <Histogram
-            label="Sharpness distribution"
-            values={images.map(i => i.sharpness ?? 0)}
-            threshold={f.sharpness_min}
-            onChange={v => upd('sharpness_min', v)}
-            accent="var(--c-keeper)"
-          />
+        {/* Quality scores — sharpness lives in the permanent strip above. */}
+        <FSection title="Aesthetic score" active={f.aesthetic_min > 0}>
           <Histogram
             label="Aesthetic distribution"
             values={images.map(i => i.aesthetic_score ?? 0)}
@@ -764,7 +814,7 @@ function FilterPanel({ filters: f, setFilters, images, onClose }) {
         </FSection>
 
         {/* Colour */}
-        <FSection title="Colour" active={f.temperature !== 'all' || f.saturation !== 'all' || f.cast_hue !== 'all' || f.hue_anchors.length > 0}>
+        <FSection title="Colour" active={f.temperature !== 'all' || f.saturation !== 'all' || f.cast_hue !== 'all' || f.hue_anchors.length > 0} defaultOpen={false}>
           <FLabel>Dominant hue anchors</FLabel>
           <HuePicker
             anchors={f.hue_anchors}
@@ -870,18 +920,23 @@ function FilterPanel({ filters: f, setFilters, images, onClose }) {
 }
 
 // ── Thumbnail components ──────────────────────────────────────────────────────
+// One vocabulary for all three states: the 4px bottom strip (drawn by the
+// ThumbCard) is the primary signal. Reject additionally gets the unmistakable X;
+// review gets a small amber corner pill (not a giant serif "?" that crops the
+// photo and reads as "is this questionable?"). Keeper relies on the strip alone.
 function VerdictMark({ verdict }) {
   if (verdict === 'reject') return (
     <svg viewBox="0 0 100 100" style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none' }}>
-      <line x1="8" y1="8" x2="92" y2="92" stroke="var(--c-danger)" strokeWidth="3" opacity="0.75" />
-      <line x1="92" y1="8" x2="8" y2="92" stroke="var(--c-danger)" strokeWidth="3" opacity="0.75" />
+      <line x1="8" y1="8" x2="92" y2="92" stroke="var(--c-danger)" strokeWidth="2.5" opacity="0.8" />
+      <line x1="92" y1="8" x2="8" y2="92" stroke="var(--c-danger)" strokeWidth="2.5" opacity="0.8" />
     </svg>
   );
-  if (verdict === 'keeper') return (
-    <div style={{ position:'absolute', top:10, right:10, width:28, height:28, borderRadius:'50%', border:'2px solid var(--c-keeper)', opacity:0.85, pointerEvents:'none' }} />
-  );
   if (verdict === 'review') return (
-    <div style={{ position:'absolute', top:6, right:10, fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:34, lineHeight:1, color:'var(--c-amber)', opacity:0.85, pointerEvents:'none' }}>?</div>
+    <div style={{ position:'absolute', top:7, right:7, padding:'2px 6px', borderRadius:999,
+                  background:'var(--c-amber)', color:'#1a1714',
+                  fontFamily:'var(--font-ui)', fontSize:'var(--cap-size)', fontWeight:700,
+                  letterSpacing:'0.16em', textTransform:'uppercase', lineHeight:1.4,
+                  pointerEvents:'none', zIndex:2 }}>Review</div>
   );
   return null;
 }
@@ -895,7 +950,7 @@ function ThumbCard({ item, selected, idx, onClick, onDoubleClick }) {
       {item.is_best && <span className="sg-thumb-best">Best</span>}
       <div style={{ position:'relative' }}>
         <img loading="lazy" src={item.thumb} alt=""
-          style={{ display:'block', width:'100%', height:160, objectFit:'cover', filter:'contrast(1.03) saturate(0.92)' }} />
+          style={{ display:'block', width:'100%', height:160, objectFit:'cover', position:'relative', zIndex:1 }} />
         <VerdictMark verdict={item.verdict} />
         {/* Content-type badge */}
         {item.content_type && item.content_type !== 'photo' && (
@@ -916,10 +971,10 @@ function ThumbCard({ item, selected, idx, onClick, onDoubleClick }) {
         )}
       </div>
       <div className="sg-thumb-strip">
-        <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:15, color:'var(--c-accent)' }}>№{pad(item.id,4)}</span>
+        <span style={{ fontFamily:'var(--font-ui)', fontSize:11, color:'var(--c-accent)', fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(item.id,4)}</span>
         <span style={{ letterSpacing:0, color:'var(--c-amber)', fontSize:11 }}>{'★'.repeat(item.stars||0)}{'·'.repeat(5-(item.stars||0))}</span>
       </div>
-      <div style={{ height:2, background: item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent' }} />
+      <div style={{ height:4, background: item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent' }} />
     </button>
   );
 }
@@ -1012,8 +1067,8 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
           return(
             <button key={item.id} data-id={item.id} onClick={()=>onSelect(item.id)}
               style={{flexShrink:0,position:'relative',padding:0,border:`2px solid ${isSel?'var(--c-accent)':'transparent'}`,cursor:'pointer',background:'none',borderRadius:'calc(var(--radius)+1px)',overflow:'hidden',transition:'border-color .12s',width:96,height:68}}>
-              <img src={item.thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover',display:'block',filter:isSel?'none':'brightness(0.65) saturate(0.8)'}}/>
-              <div style={{position:'absolute',bottom:0,left:0,right:0,height:3,background:item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent'}}/>
+              <img src={item.thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover',display:'block',opacity:isSel?1:0.55}}/>
+              <div style={{position:'absolute',bottom:0,left:0,right:0,height:4,background:item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent'}}/>
             </button>
           );
         })}
@@ -1023,15 +1078,22 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
 }
 
 // ── Main Triage Screen ────────────────────────────────────────────────────────
-function TriageScreen({ layout, setLayout }) {
+function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, setPanelOpen }) {
   const { MOCK_IMAGES, MOCK_LIBRARIES } = window.SG_DATA;
 
   const [filters, setFilters]     = useState(DEFAULT_FILTERS);
-  const [activeLib, setActiveLib] = useState(null);
   const [selectedId, setSelectedId] = useState(MOCK_IMAGES[0]?.id ?? null);
   const [images, setImages]       = useState(MOCK_IMAGES);
   const [lightbox, setLightbox]   = useState(false);
-  const [panelOpen, setPanelOpen] = useState(false);
+  // Transient verdict confirmation — in filmstrip layout the only on-screen
+  // signal (the thumbnail border) is off-screen, so flash the word centrally.
+  const [flash, setFlash]         = useState(null);
+  const flashTimer = useRef(null);
+  const showFlash = useCallback((label) => {
+    setFlash(label);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash(null), 450);
+  }, []);
 
   const upd = useCallback((k, v) => setFilters(prev => ({...prev, [k]: v})), []);
 
@@ -1092,14 +1154,14 @@ function TriageScreen({ layout, setLayout }) {
       if(lightbox) return;
       if(e.key==='j'||e.key==='ArrowRight') goNext();
       if(e.key==='k'||e.key==='ArrowLeft')  goPrev();
-      if(e.key==='z') updateVerdict('keeper',null);
-      if(e.key==='c') updateVerdict('review',null);
-      if(e.key==='x') updateVerdict('reject',null);
-      if('12345'.includes(e.key)) updateVerdict(null,parseInt(e.key));
+      if(e.key==='z'){ updateVerdict('keeper',null); showFlash('Keeper'); }
+      if(e.key==='c'){ updateVerdict('review',null); showFlash('Review'); }
+      if(e.key==='x'){ updateVerdict('reject',null); showFlash('Reject'); }
+      if('12345'.includes(e.key)){ updateVerdict(null,parseInt(e.key)); showFlash(`${e.key} ★`); }
     };
     window.addEventListener('keydown',h);
     return ()=>window.removeEventListener('keydown',h);
-  },[goNext,goPrev,updateVerdict,lightbox]);
+  },[goNext,goPrev,updateVerdict,lightbox,showFlash]);
 
   const stripStats = useMemo(()=>{
     const lib = activeLib!==null?MOCK_LIBRARIES.find(l=>l.id===activeLib):null;
@@ -1111,26 +1173,32 @@ function TriageScreen({ layout, setLayout }) {
 
   return (
     <div style={{display:'flex',flex:1,minHeight:0,overflow:'hidden'}}>
-      <LibRail libraries={MOCK_LIBRARIES} activeLib={activeLib} setActiveLib={id=>{setActiveLib(id);}} />
-
-      {/* Filter panel */}
+      {/* Filter panel (library picker now lives in the sidebar; timeline folded
+          into the panel below) */}
       {panelOpen && (
-        <FilterPanel filters={filters} setFilters={setFilters} images={libScoped} onClose={()=>setPanelOpen(false)} />
+        <FilterPanel filters={filters} setFilters={setFilters} images={libScoped}
+          onClose={()=>setPanelOpen(false)}
+          onTimelineChange={changes => {
+            setFilters(prev => ({
+              ...prev,
+              ...('from' in changes ? { date_from: changes.from } : {}),
+              ...('to'   in changes ? { date_to:   changes.to   } : {}),
+            }));
+          }} />
       )}
 
       {/* Main content */}
       <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,minHeight:0}}>
-        {/* Stat strip */}
-        <div className="sg-stat-strip">
-          <span style={{fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:15,color:'var(--c-text)'}}>{stripStats.name}</span>
-          <span>{filtered.length}<em style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--c-mute)',fontStyle:'normal',marginLeft:4}}>shown</em></span>
-          <span style={{color:'var(--c-keeper)'}}>{stripStats.keep}<em style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>keep</em></span>
-          <span style={{color:'var(--c-amber)'}}>{stripStats.review}<em style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>review</em></span>
-          <span style={{color:'var(--c-danger)'}}>{stripStats.reject}<em style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>reject</em></span>
-        </div>
-
-        {/* Filter bar */}
+        {/* Merged stat + filter bar — one row: counts left, controls right. */}
         <div className="sg-filterbar" style={{gap:6}}>
+          <span style={{fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:15,color:'var(--c-text)',marginRight:4}}>{stripStats.name}</span>
+          <span style={{fontVariantNumeric:'tabular-nums'}}>{filtered.length}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--c-mute)',fontStyle:'normal',marginLeft:4}}>shown</em></span>
+          <span style={{color:'var(--c-keeper)',fontVariantNumeric:'tabular-nums'}}>{stripStats.keep}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>keep</em></span>
+          <span style={{color:'var(--c-amber)',fontVariantNumeric:'tabular-nums'}}>{stripStats.review}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>review</em></span>
+          <span style={{color:'var(--c-danger)',fontVariantNumeric:'tabular-nums'}}>{stripStats.reject}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>reject</em></span>
+
+          <div style={{width:1,background:'var(--c-border)',height:18,margin:'0 4px',flexShrink:0}}/>
+
           {/* Verdict quick chips */}
           {['all','keeper','review','reject'].map(v=>(
             <Chip key={v} on={filters.verdict===v} onClick={()=>upd('verdict',v)}>{v}</Chip>
@@ -1190,20 +1258,6 @@ function TriageScreen({ layout, setLayout }) {
           </div>
         </div>
 
-        {/* Timeline scrubber */}
-        <TimelineScrubber
-          images={libScoped}
-          dateFrom={filters.date_from}
-          dateTo={filters.date_to}
-          onChange={changes => {
-            setFilters(prev => ({
-              ...prev,
-              ...('from' in changes ? { date_from: changes.from } : {}),
-              ...('to'   in changes ? { date_to:   changes.to   } : {}),
-            }));
-          }}
-        />
-
         {/* Grid / filmstrip */}
         <div style={{flex:1,display:'flex',minHeight:0}}>
           {layout==='grid'?(
@@ -1221,6 +1275,18 @@ function TriageScreen({ layout, setLayout }) {
       {lightbox&&(
         <Lightbox image={selectedImage} items={filtered} onClose={()=>setLightbox(false)}
           onVerdict={updateVerdict} onPrev={goPrev} onNext={goNext}/>
+      )}
+
+      {flash && (
+        <div style={{ position:'fixed', top:'18%', left:'50%', transform:'translateX(-50%)',
+                      zIndex:10001, pointerEvents:'none',
+                      padding:'10px 22px', borderRadius:'var(--radius)',
+                      background:'rgba(10,9,7,0.85)', border:`1px solid ${verdictColor(flash.toLowerCase())}`,
+                      color:verdictColor(flash.toLowerCase()),
+                      fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:30, lineHeight:1,
+                      animation:'sg-fade .12s ease-out' }}>
+          {flash}
+        </div>
       )}
     </div>
   );
