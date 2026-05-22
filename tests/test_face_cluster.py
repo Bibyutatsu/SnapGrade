@@ -116,6 +116,36 @@ def test_label_merge_split_preview(tmp_path, monkeypatch):
     assert before == after
 
 
+def test_labels_survive_recluster(tmp_path, monkeypatch):
+    """A named cluster keeps its name after a full re-cluster at a new threshold,
+    via centroid nearest-match re-anchoring (Phase 5)."""
+    from snapgrade import db as db_mod
+    dbp = tmp_path / "t.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB", dbp)
+    conn = db.connect(dbp)
+    vecs, centers = _three_blobs(per=8, seed=3)
+    _seed_faces(conn, vecs)
+    face_cluster.cluster(conn)
+
+    # Name each of the three clusters after the person at its centroid.
+    names = {}
+    for cid in sorted({int(r[0]) for r in conn.execute("SELECT cluster_id FROM faces")}):
+        # representative embedding for this cluster
+        row = conn.execute("SELECT embedding FROM faces WHERE cluster_id=? LIMIT 1", (cid,)).fetchone()
+        emb = np.frombuffer(row["embedding"], dtype=np.float32)
+        # which blob center is this closest to
+        nearest = int(np.argmax([float(np.dot(emb, c / np.linalg.norm(c))) for c in centers]))
+        name = f"person-{nearest}"
+        face_cluster.set_label(conn, cid, name)
+        names[cid] = name
+    assert len(set(names.values())) == 3
+
+    # Re-cluster (renumbers cluster ids). Labels must re-anchor to the same people.
+    face_cluster.cluster(conn, face_cluster.FaceClusterConfig(similarity_threshold=0.5))
+    new_labels = set(face_cluster.get_labels(conn).values())
+    assert new_labels == {"person-0", "person-1", "person-2"}, new_labels
+
+
 def test_set_burst_best(tmp_path, monkeypatch):
     from snapgrade import db as db_mod
     dbp = tmp_path / "t.db"

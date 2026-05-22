@@ -3,33 +3,45 @@
 //          Sidebar, TopBar, DetailPanel, Lightbox,
 //          Chip, Btn, MetricTags
 
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback, useRef, useContext, createContext } = React;
 
+// Single source of truth for cross-screen data (libraries, stats) + the refresh
+// entry point, so screens stop each reading window.SG_DATA at mount and drifting.
+const SGDataContext = createContext(null);
+function useSGData() {
+  return useContext(SGDataContext) || {
+    libraries: window.SG_DATA.MOCK_LIBRARIES,
+    stats: window.SG_DATA.MOCK_STATS,
+    refresh: () => window.SG_REFRESH?.(),
+  };
+}
+
+// Third field is the short label shown when the sidebar collapses to 56px.
 const TABS = [
-  ["library",  "Library",      "I"],
-  ["triage",   "Triage",       "II"],
-  ["bursts",   "Bursts",       "III"],
-  ["faces",    "Face Clusters","IV"],
-  ["xmp",      "XMP Export",  "V"],
-  ["organize", "Organize",    "VI"],
-  ["settings", "Settings",    "VII"],
+  ["library",  "Library",       "Lib"],
+  ["triage",   "Triage",        "Tri"],
+  ["bursts",   "Bursts",        "Brst"],
+  ["faces",    "Face Clusters", "Face"],
+  ["xmp",      "XMP Export",    "XMP"],
+  ["organize", "Organize",      "Org"],
+  ["settings", "Settings",      "Set"],
 ];
 
 const TAB_TITLES = {
-  library:  ["The", "Library"],
-  triage:   ["The", "Contact Sheet"],
-  bursts:   ["Burst", "Comparison"],
-  faces:    ["Face", "Clusters"],
-  xmp:      ["Batch", "XMP Export"],
-  organize: ["The", "Hierarchy"],
-  settings: ["The", "Darkroom"],
+  library:  "Library",
+  triage:   "Triage",
+  bursts:   "Bursts",
+  faces:    "Face Clusters",
+  xmp:      "XMP Export",
+  organize: "Organize",
+  settings: "Settings",
 };
 
 function pad(n, w = 3) { return String(n ?? 0).padStart(w, "0"); }
 
 function EmptyState({ children, padding = '60px 20px' }) {
   return (
-    <div style={{ textAlign:'center', padding, color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22 }}>
+    <div style={{ textAlign:'center', padding, color:'var(--c-mute)', fontSize:14 }}>
       {children}
     </div>
   );
@@ -44,40 +56,55 @@ function verdictColor(v) {
 
 function Chip({ on, onClick, children, style = {} }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 13px',
-        fontSize: 9, letterSpacing: '0.22em', textTransform: 'uppercase',
-        border: `1px solid ${on ? 'var(--c-accent)' : 'var(--c-border2)'}`,
-        color: on ? 'var(--c-accent)' : 'var(--c-text2)',
-        background: 'transparent',
-        borderRadius: 'var(--radius)',
-        cursor: 'pointer', transition: 'all .12s', fontFamily: 'var(--font-ui)',
-        ...style,
-      }}
-    >{children}</button>
+    <button className={`sg-chip ${on ? 'on' : ''}`} onClick={onClick} style={style}>
+      {children}
+    </button>
   );
 }
 
+// Single source for the all/keeper/review/reject verdict-scope chip row, shared
+// by Triage and XMP Export (previously duplicated inline in both).
+const VERDICT_FILTERS = ['all', 'keeper', 'review', 'reject'];
+function VerdictChips({ value, onChange }) {
+  return VERDICT_FILTERS.map(v => (
+    <Chip key={v} on={value === v} onClick={() => onChange(v)}>{v}</Chip>
+  ));
+}
+
 function Btn({ variant = 'ghost', onClick, disabled, children, style = {} }) {
-  const variants = {
-    ghost:   { border: '1px solid var(--c-border2)', color: 'var(--c-text2)' },
-    primary: { border: '1px solid var(--c-accent)',  color: 'var(--c-accent)' },
-    danger:  { border: '1px solid var(--c-danger)',  color: 'var(--c-danger)' },
-    solid:   { border: '1px solid var(--c-accent)',  color: 'var(--c-bg)',  background: 'var(--c-accent)' },
-  };
-  const s = variants[variant] || variants.ghost;
+  const cls = variant && variant !== 'ghost' ? `sg-btn sg-btn-${variant}` : 'sg-btn';
   return (
-    <button onClick={onClick} disabled={disabled} style={{
-      padding: '9px 20px',
-      fontSize: 9, letterSpacing: '0.26em', textTransform: 'uppercase',
-      background: 'transparent', cursor: disabled ? 'not-allowed' : 'pointer',
-      borderRadius: 'var(--radius)', transition: 'all .15s', opacity: disabled ? 0.4 : 1,
-      fontFamily: 'var(--font-ui)',
-      ...s, ...style,
-    }}>{children}</button>
+    <button className={cls} onClick={onClick} disabled={disabled} style={style}>
+      {children}
+    </button>
+  );
+}
+
+// ── ConfirmModal ──────────────────────────────────────────────────────────────
+// Themed replacement for window.confirm — Esc cancels, Enter confirms. `body`
+// may be any node so callers can show real counts at risk, not generic prose.
+function ConfirmModal({ open, title, body, confirmLabel = 'Confirm', danger, onConfirm, onCancel }) {
+  useEffect(() => {
+    if (!open) return;
+    const h = e => {
+      if (e.key === 'Escape') onCancel();
+      if (e.key === 'Enter')  onConfirm();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [open, onConfirm, onCancel]);
+  if (!open) return null;
+  return (
+    <div className="sg-modal-backdrop" onClick={onCancel}>
+      <div className="sg-modal" onClick={e => e.stopPropagation()}>
+        <h3 className="sg-modal-title">{title}</h3>
+        <div className="sg-modal-body">{body}</div>
+        <div className="sg-modal-actions">
+          <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+          <Btn variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>{confirmLabel}</Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -110,7 +137,7 @@ function MetricTags({ image }) {
 
   const tagStyle = {
     display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '3px 9px', fontSize: 9, letterSpacing: '0.18em',
+    padding: '3px 9px', fontSize: 10, letterSpacing: '0.18em',
     textTransform: 'uppercase', borderRadius: 'var(--radius)',
     fontFamily: 'var(--font-ui)',
   };
@@ -135,7 +162,7 @@ function MetricTags({ image }) {
               <span style={{ ...tagStyle,
                              border: '1px solid var(--c-border2)', color: 'var(--c-text2)' }}>
                 ⛰ {scene}
-                {sceneConf != null && <span style={{ marginLeft: 4, opacity: 0.6, fontSize: 8 }}>{Math.round(sceneConf * 100)}%</span>}
+                {sceneConf != null && <span style={{ marginLeft: 4, opacity: 0.6, fontSize: 10 }}>{Math.round(sceneConf * 100)}%</span>}
               </span>
             )}
             {objClasses.slice(0, 8).map(c => (
@@ -148,7 +175,7 @@ function MetricTags({ image }) {
               <span key={`an${i}`} style={{ ...tagStyle,
                                      border: '1px solid var(--c-border2)', color: 'var(--c-text2)' }}>
                 🐾 {a.species}
-                <span style={{ fontSize: 8, opacity: 0.6 }}> {Math.round(a.confidence * 100)}%</span>
+                <span style={{ fontSize: 10, opacity: 0.6 }}> {Math.round(a.confidence * 100)}%</span>
               </span>
             ))}
           </div>
@@ -184,7 +211,7 @@ function MetricTags({ image }) {
                                  letterSpacing: '0.01em', wordBreak: 'break-all' }}>
                     {r.text}
                   </span>
-                  <span style={{ fontSize: 8, color: 'var(--c-mute)', letterSpacing: '0.14em',
+                  <span style={{ fontSize: 10, color: 'var(--c-mute)', letterSpacing: '0.14em',
                                  flexShrink: 0, marginLeft: 8 }}>
                     {Math.round(r.confidence * 100)}%
                   </span>
@@ -235,7 +262,7 @@ function MetricTags({ image }) {
             {color.cast_hue && color.cast_strength > 0.2 && (
               <div style={{
                 marginLeft: 6, padding: '2px 8px',
-                fontSize: 8, letterSpacing: '0.2em', textTransform: 'uppercase',
+                fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase',
                 border: '1px solid var(--c-amber)', color: 'var(--c-amber)',
                 borderRadius: 'var(--radius)', fontFamily: 'var(--font-ui)',
               }}>
@@ -245,6 +272,24 @@ function MetricTags({ image }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Click-to-expand job error — the full message is no longer truncated away.
+function JobError({ kind, error }) {
+  const [open, setOpen] = useState(false);
+  const long = error.length > 80;
+  return (
+    <div onClick={() => long && setOpen(o => !o)}
+         title={long ? 'Click to expand' : ''}
+         style={{ marginTop: 8, color: 'var(--c-danger)', cursor: long ? 'pointer' : 'default' }}>
+      <div style={{ fontSize: 'var(--cap-size)', letterSpacing: '.1em', textTransform: 'uppercase' }}>
+        {kind} error {long && <span style={{ opacity: .7 }}>{open ? '▴' : '▾'}</span>}
+      </div>
+      <div style={{ fontSize: 11, lineHeight: 1.4, wordBreak: 'break-word', marginTop: 2 }}>
+        {open || !long ? error : error.slice(0, 80) + '…'}
+      </div>
     </div>
   );
 }
@@ -267,7 +312,7 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
         </>
       )}
       <nav className="sg-nav sg-scroll" style={{ overflowX: 'hidden' }}>
-        {TABS.map(([k, label, n]) => (
+        {TABS.map(([k, label, short]) => (
           <React.Fragment key={k}>
             <button
               className={`sg-nav-btn ${tab === k ? 'on' : ''}`}
@@ -275,8 +320,9 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
               title={collapsed ? label : ''}
               style={{ justifyContent: collapsed ? 'center' : 'flex-start' }}
             >
-              <span className="sg-nav-n">{n}.</span>
-              {!collapsed && <span className="sg-nav-label">{label}</span>}
+              {collapsed
+                ? <span className="sg-nav-n">{short}</span>
+                : <span className="sg-nav-label">{label}</span>}
             </button>
             {/* Triage library group */}
             {k === 'triage' && tab === 'triage' && !collapsed && setActiveLib && (
@@ -297,6 +343,14 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
           </React.Fragment>
         ))}
       </nav>
+      {/* Collapsed: still surface that a background job is live so feedback isn't
+          hidden behind the rail. */}
+      {collapsed && stats && (stats.ingest?.running || stats.faces?.running) && (
+        <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'center', paddingTop: 12 }}
+             title={stats.ingest?.running ? 'Ingest running' : 'Face clustering running'}>
+          <span className="sg-live-dot" />
+        </div>
+      )}
       {!collapsed && stats && (
         <div className="sg-sidebar-foot">
           <div className="sg-foot-row"><span>Libraries</span><span>{pad(stats.libraries ?? 0, 3)}</span></div>
@@ -321,11 +375,7 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
               </div>
             );
           })()}
-          {stats.ingest?.error && (
-            <div style={{ marginTop:8, fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-danger)' }}>
-              ingest error · {stats.ingest.error.slice(0, 80)}
-            </div>
-          )}
+          {stats.ingest?.error && <JobError kind="ingest" error={stats.ingest.error} />}
           {stats.faces?.running && (() => {
             const f = stats.faces;
             const done = f.done || 0;
@@ -347,11 +397,7 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
               </div>
             );
           })()}
-          {stats.faces?.error && (
-            <div style={{ marginTop:8, fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-danger)' }}>
-              faces error · {stats.faces.error.slice(0, 80)}
-            </div>
-          )}
+          {stats.faces?.error && <JobError kind="faces" error={stats.faces.error} />}
         </div>
       )}
     </aside>
@@ -359,10 +405,9 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
 }
 
 // ── Theme picker (lives in topbar) ────────────────────────────────────────────
-// Labels set expectations about *what changes*: "Cinematic" carries the grain /
-// vignette / sprocket / serif treatment; "Utility" drops them for a flat,
-// neutral working surface. (Themes are functionally the same dark-film /
-// dark-modern / light-pro tokens underneath.)
+// "Cinematic" is the only theme that can carry the (opt-in, off-by-default) grain
+// + vignette + sprocket atmosphere; "Modern"/"Utility" are flat neutral working
+// surfaces. (Underlying dark-film / dark-modern / light-pro token sets.)
 const THEMES = [
   { id: 'dark-film',   label: 'Cinematic',     swatch: ['#0a0907', '#c1440e', '#d4a017'] },
   { id: 'dark-modern', label: 'Modern',        swatch: ['#0f0f12', '#e05a35', '#42b878'] },
@@ -387,7 +432,7 @@ function ThemePicker({ theme, onThemeChange }) {
           background: open ? 'rgba(193,68,14,0.05)' : 'transparent',
           color: 'var(--c-text2)', cursor: 'pointer',
           borderRadius: 'var(--radius)', fontFamily: 'var(--font-ui)',
-          fontSize: 9, letterSpacing: '0.22em', textTransform: 'uppercase',
+          fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
           transition: 'all .12s',
         }}>
         <span style={{ display: 'inline-flex', gap: 2 }}>
@@ -398,7 +443,7 @@ function ThemePicker({ theme, onThemeChange }) {
           ))}
         </span>
         <span>{active.label}</span>
-        <span style={{ fontSize: 9, color: 'var(--c-mute)' }}>▾</span>
+        <span style={{ fontSize: 10, color: 'var(--c-mute)' }}>▾</span>
       </button>
       {open && (
         <div style={{
@@ -438,12 +483,12 @@ function ThemePicker({ theme, onThemeChange }) {
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 function TopBar({ tab, layout, onLayoutToggle, theme, onThemeChange }) {
-  const [pre, post] = TAB_TITLES[tab] || ['', tab];
+  const title = TAB_TITLES[tab] || tab;
   return (
     <div className="sg-topbar">
       <div>
-        <div className="sg-crumbs">Roll · {tab.toUpperCase()} · {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
-        <div className="sg-page-title">{pre} <em>{post}</em></div>
+        <div className="sg-crumbs">SnapGrade · {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+        <div className="sg-page-title">{title}</div>
       </div>
       <div style={{ flex: 1 }} />
       {tab === 'triage' && onLayoutToggle && (
@@ -543,7 +588,7 @@ function SubjectOverlay({ subjects, decoded }) {
         <div key={i} style={bboxStyle(s, decoded)}>
           <span style={{
             position: 'absolute', top: -16, left: 0,
-            fontSize: 8, letterSpacing: '0.18em', textTransform: 'uppercase',
+            fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase',
             padding: '1px 5px', fontFamily: 'var(--font-ui)',
             background: s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)',
             color: 'var(--c-bg)',
@@ -558,17 +603,65 @@ function SubjectOverlay({ subjects, decoded }) {
 }
 
 // ── DetailPanel ───────────────────────────────────────────────────────────────
-function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
+const DETAIL_MIN_W = 300, DETAIL_MAX_W = 620;
+
+// Color labels are independent of the verdict (which already owns keeper/review/
+// reject). They express workflow state — e.g. blue = needs edit, purple = ready
+// to share — and are written into the XMP sidecar.
+const LABELS = [
+  { key: null,     swatch: 'transparent',     name: 'None' },
+  { key: 'blue',   swatch: '#3b82c4',         name: 'Needs edit' },
+  { key: 'purple', swatch: '#9b59b6',         name: 'To print' },
+  { key: 'green',  swatch: 'var(--c-keeper)', name: 'Ready' },
+];
+
+function DetailPanel({ image, onVerdict, onReveal, onOpenLightbox, compact }) {
   const [xmpMsg, setXmpMsg] = useState('');
   const [showBoxes, setShowBoxes] = useState(true);
+  const writeXmp = () => {
+    setXmpMsg('writing…');
+    window.SG_API.xmp(image.id)
+      .then(() => setXmpMsg('XMP sidecar written'))
+      .catch(err => setXmpMsg(`XMP failed: ${err.message}`));
+  };
+  // User-resizable width (persisted) so the panel isn't a fixed 26%-of-screen
+  // wall on a 1440px laptop. Compact (filmstrip) layout keeps its narrow width.
+  const [width, setWidth] = useState(() => {
+    const s = +localStorage.getItem('sg.detailW');
+    return s >= DETAIL_MIN_W && s <= DETAIL_MAX_W ? s : 380;
+  });
+  const resizeRef = useRef(null);
+  useEffect(() => {
+    const move = e => {
+      if (!resizeRef.current) return;
+      const w = Math.min(DETAIL_MAX_W, Math.max(DETAIL_MIN_W,
+        resizeRef.current.w + (resizeRef.current.x - e.clientX)));
+      setWidth(w);
+      localStorage.setItem('sg.detailW', String(w));
+    };
+    const up = () => { resizeRef.current = null; document.body.style.userSelect = ''; };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  }, []);
+  const startResize = e => {
+    resizeRef.current = { x: e.clientX, w: width };
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  };
+  const panelW = compact ? 280 : width;
+  const ResizeHandle = compact ? null : (
+    <div onMouseDown={startResize} title="Drag to resize"
+         style={{ position:'absolute', left:-3, top:0, bottom:0, width:6, cursor:'col-resize', zIndex:2 }} />
+  );
 
   if (!image) return (
-    <aside className="sg-detail" style={{ width: compact ? 280 : 380 }}>
+    <aside className="sg-detail" style={{ width: panelW, position:'relative' }}>
+      {ResizeHandle}
       <div className="sg-detail-empty">
-        <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontStyle: 'italic',
-                      color: 'var(--c-text2)', marginBottom: 8 }}>No frame selected.</div>
-        <div style={{ fontSize: 9, letterSpacing: '0.22em', textTransform: 'uppercase',
-                      color: 'var(--c-mute)' }}>Pick from the sheet</div>
+        <div style={{ fontSize: 14, color: 'var(--c-text2)', marginBottom: 8 }}>No frame selected.</div>
+        <div style={{ fontSize: 'var(--cap-size)', letterSpacing: 'var(--cap-track)', textTransform: 'uppercase',
+                      color: 'var(--c-mute)' }}>Pick from the grid</div>
       </div>
     </aside>
   );
@@ -577,7 +670,8 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
   const vColors = { keeper: 'var(--c-keeper)', review: 'var(--c-amber)', reject: 'var(--c-danger)' };
 
   return (
-    <aside className="sg-detail" style={{ width: compact ? 280 : 380 }}>
+    <aside className="sg-detail" style={{ width: panelW, position:'relative' }}>
+      {ResizeHandle}
       {/* Preview */}
       {!compact && (
         <div className="sg-detail-preview" onClick={onOpenLightbox}
@@ -593,11 +687,19 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
               position: 'absolute', bottom: 8, left: 10,
               background: m.content_type === 'screenshot' ? 'var(--c-amber)' : 'var(--c-accent)',
               color: 'var(--c-bg)',
-              fontSize: 8, letterSpacing: '0.2em', textTransform: 'uppercase',
+              fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase',
               padding: '3px 8px', fontFamily: 'var(--font-ui)',
             }}>
               {m.content_type === 'screenshot' ? '🖥' : '📄'} {m.content_type}
             </div>
+          )}
+          {m.metrics?.live_photo && (
+            <div title={`Live Photo · ${m.metrics.live_photo.video || ''}`} style={{
+              position: 'absolute', top: 8, left: 10,
+              background: 'rgba(10,9,7,0.7)', color: 'var(--c-text)',
+              fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase',
+              padding: '3px 8px', fontFamily: 'var(--font-ui)', borderRadius: 'var(--radius)',
+            }}>◉ Live</div>
           )}
           <div style={{ position: 'absolute', bottom: 8, right: 10, fontSize: 10, opacity: 0.6,
                         letterSpacing: '0.1em', color: 'var(--c-text)', fontFamily: 'var(--font-ui)' }}>⤢ full</div>
@@ -608,7 +710,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
         <div className="sg-detail-path">{m.path.split('/').pop()}</div>
 
         {!compact && m.metrics?.subjects?.length > 0 && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9,
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10,
                           letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--c-text2)', cursor: 'pointer' }}>
             <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)}
                    style={{ accentColor: 'var(--c-accent)' }} />
@@ -622,7 +724,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
           <div style={{ display: 'flex', gap: 6 }}>
             {['keeper', 'review', 'reject'].map(v => (
               <button key={v} onClick={() => onVerdict(v, null)} style={{
-                flex: 1, padding: '9px 0', fontSize: 9, letterSpacing: '0.22em',
+                flex: 1, padding: '9px 0', fontSize: 10, letterSpacing: '0.1em',
                 textTransform: 'uppercase',
                 border: `1px solid ${m.verdict === v ? vColors[v] : 'var(--c-border2)'}`,
                 color: m.verdict === v ? vColors[v] : 'var(--c-mute)',
@@ -633,15 +735,29 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
           </div>
         </div>
 
-        {/* Stars */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="sg-detail-label" style={{ marginBottom: 0, marginRight: 8 }}>Stars</span>
-          {[1,2,3,4,5].map(s => (
-            <button key={s} onClick={() => onVerdict(null, s)} style={{
-              fontSize: 18, color: s <= (m.stars || 0) ? 'var(--c-amber)' : 'var(--c-border2)',
-              background: 'none', border: 'none', cursor: 'pointer', padding: '0 1px',
-              transition: 'color .12s',
-            }}>{s <= (m.stars || 0) ? '★' : '☆'}</button>
+        {/* Stars — only on keeper/review; rejects show no rating (Lightroom model). */}
+        {m.verdict !== 'reject' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="sg-detail-label" style={{ marginBottom: 0, marginRight: 8 }}>Stars</span>
+            {[1,2,3,4,5].map(s => (
+              <button key={s} onClick={() => onVerdict(null, s)} style={{
+                fontSize: 18, color: s <= (m.stars || 0) ? 'var(--c-amber)' : 'var(--c-border2)',
+                background: 'none', border: 'none', cursor: 'pointer', padding: '0 1px',
+                transition: 'color .12s',
+              }}>{s <= (m.stars || 0) ? '★' : '☆'}</button>
+            ))}
+          </div>
+        )}
+
+        {/* Color label — workflow state, independent of verdict. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="sg-detail-label" style={{ marginBottom: 0, marginRight: 4 }}>Label</span>
+          {LABELS.map(l => (
+            <button key={l.key || 'none'} title={l.name} onClick={() => onVerdict(null, null, l.key)}
+              style={{ width: 18, height: 18, borderRadius: '50%', cursor: 'pointer',
+                       background: l.swatch,
+                       border: `2px solid ${m.label === l.key ? 'var(--c-text)' : 'var(--c-border2)'}`,
+                       boxShadow: m.label === l.key ? '0 0 0 1px var(--c-text)' : 'none' }} />
           ))}
         </div>
 
@@ -691,12 +807,22 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
                   {isClosedEyes && (
                     <span
                       title="Eyes-closed detection uses landmark geometry only — hair, sunglasses, or other occlusion can cause false positives. Override the verdict if the eyes look open."
-                      style={{ marginLeft:4, padding:'1px 6px', borderRadius:'999px', border:'1px solid var(--c-amber)', color:'var(--c-amber)', fontSize:9, fontFamily:'var(--font-ui)', fontStyle:'normal', letterSpacing:'.1em', cursor:'help', verticalAlign:'1px' }}
+                      style={{ marginLeft:4, padding:'1px 6px', borderRadius:'999px', border:'1px solid var(--c-amber)', color:'var(--c-amber)', fontSize:10, fontFamily:'var(--font-ui)', fontStyle:'normal', letterSpacing:'.1em', cursor:'help', verticalAlign:'1px' }}
                     >?</span>
                   )}
                 </React.Fragment>
               );
             })}
+          </div>
+        )}
+
+        {/* Advisories — informational, did not drive the verdict. */}
+        {m.warnings && m.warnings.length > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--c-text2)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {m.warnings.map((w, i) => (
+              <span key={i} style={{ padding: '2px 8px', border: '1px dashed var(--c-border2)',
+                                     borderRadius: 'var(--radius)', color: 'var(--c-mute)' }}>ⓘ {w}</span>
+            ))}
           </div>
         )}
 
@@ -714,6 +840,12 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
           <Btn variant="ghost" onClick={onOpenLightbox} style={{ width: '100%', marginTop: 4 }}>Full view ⤢</Btn>
         )}
 
+        {/* File actions */}
+        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+          <Btn variant="ghost" onClick={writeXmp} style={{ flex: 1, padding: '8px 0' }}>Write XMP</Btn>
+          {onReveal && <Btn variant="ghost" onClick={() => onReveal(image.id)} style={{ flex: 1, padding: '8px 0' }}>Reveal ↗</Btn>}
+        </div>
+
         {xmpMsg && <div style={{ fontSize: 10, color: 'var(--c-amber)', marginTop: 6 }}>→ {xmpMsg}</div>}
       </div>
     </aside>
@@ -723,7 +855,7 @@ function DetailPanel({ image, onVerdict, onOpenLightbox, compact }) {
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 function lbZoomBtn(active) {
   return {
-    padding: '5px 11px', fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase',
+    padding: '5px 11px', fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase',
     fontFamily: 'var(--font-ui)', borderRadius: 'var(--radius)',
     background: 'rgba(10,9,7,0.7)', cursor: 'pointer',
     border: `1px solid ${active ? 'var(--c-accent)' : 'var(--c-border2)'}`,
@@ -746,11 +878,22 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
   // Reset when the frame changes.
   useEffect(() => { setScale(1); setOffset({ x: 0, y: 0 }); setHiRes(null); }, [image && image.id]);
 
+  // Force a recompute of maxScale on window resize so 1:1 stays honest.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const h = () => forceTick(t => t + 1);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
+
   // Native-pixel ("1:1") scale relative to the fit-rendered size — the max useful
-  // magnification (beyond it we'd just upscale).
+  // magnification (beyond it we'd just upscale). Measure the live viewport rect
+  // rather than window.innerHeight*0.78 so it's correct after a resize.
   const oneToOne = useCallback(() => {
     const W = image?.width || 6016, H = image?.height || 4016;
-    const vw = window.innerWidth * 0.86, vh = window.innerHeight * 0.78;
+    const vp = viewportRef.current?.getBoundingClientRect();
+    const vw = vp?.width  || window.innerWidth  * 0.86;
+    const vh = vp?.height || window.innerHeight * 0.78;
     const ar = W / H;
     const renderedW = (vw / vh > ar) ? vh * ar : vw;
     return Math.max(1, Math.min(8, W / renderedW));
@@ -865,7 +1008,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
               decoded={image.metrics?.decoded_size}
               ocr={image.ocr}
               naturalSize={[image.width || 6016, image.height || 4016]}
-              showBoxes={showBoxes && !zoomed}
+              showBoxes={showBoxes}
               imgStyle={{ boxShadow: '0 30px 80px rgba(0,0,0,0.9)', border: '1px solid var(--c-border)',
                           imageRendering: zoomed ? 'auto' : 'auto' }}
             />
@@ -891,9 +1034,23 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
           </h4>
           <p>{image.path}</p>
           <p style={{ marginTop: 4 }}>{image.camera_model} · f/{image.f_number} · {image.exposure_time} · ISO {image.iso}</p>
+          {/* Quality strip — the numbers that drove the verdict, pinned here so
+              you can confirm sharpness at 100% without reopening the detail panel. */}
+          <div style={{ marginTop: 8, display:'flex', gap:14, justifyContent:'center', flexWrap:'wrap',
+                        fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums', fontSize:11 }}>
+            <span style={{ color: image.sharpness > 0.55 ? 'var(--c-keeper)' : image.sharpness > 0.32 ? 'var(--c-amber)' : 'var(--c-danger)' }}>
+              Sharp {Math.round((image.sharpness || 0) * 100)}%
+            </span>
+            <span style={{ color: 'var(--c-text2)' }}>
+              Aesthetic {image.aesthetic_score != null ? Math.round(image.aesthetic_score * 100) + '%' : '—'}
+            </span>
+            <span style={{ color: verdictColor(image.verdict), textTransform:'uppercase', letterSpacing:'.1em' }}>
+              {image.verdict || 'unrated'}
+            </span>
+          </div>
           {(image.metrics?.subjects?.length > 0 || image.ocr?.length > 0) && (
             <label style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:8,
-                            fontSize:9, letterSpacing:'.18em', textTransform:'uppercase',
+                            fontSize:10, letterSpacing:'.18em', textTransform:'uppercase',
                             color:'var(--c-text2)', cursor:'pointer' }}>
               <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)}
                      style={{ accentColor:'var(--c-accent)' }} />
@@ -906,7 +1063,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
               const c = verdictColor(v);
               return (
                 <button key={v} onClick={() => onVerdict(v, null)} style={{
-                  padding: '8px 16px', fontSize: 9, letterSpacing: '0.22em', textTransform: 'uppercase',
+                  padding: '8px 16px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
                   border: `1px solid ${image.verdict === v ? c : 'var(--c-border2)'}`,
                   color: image.verdict === v ? c : 'var(--c-text2)',
                   background: 'transparent', cursor: 'pointer', borderRadius: 'var(--radius)',
@@ -915,19 +1072,21 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
               );
             })}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 2, marginTop: 10 }}>
-            {[1,2,3,4,5].map(s => (
-              <button key={s} onClick={() => onVerdict(null, s)} style={{
-                fontSize: 20, color: s <= (image.stars || 0) ? 'var(--c-amber)' : 'var(--c-border2)',
-                background: 'none', border: 'none', cursor: 'pointer',
-              }}>{s <= (image.stars || 0) ? '★' : '☆'}</button>
-            ))}
-          </div>
+          {image.verdict !== 'reject' && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 2, marginTop: 10 }}>
+              {[1,2,3,4,5].map(s => (
+                <button key={s} onClick={() => onVerdict(null, s)} style={{
+                  fontSize: 20, color: s <= (image.stars || 0) ? 'var(--c-amber)' : 'var(--c-border2)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                }}>{s <= (image.stars || 0) ? '★' : '☆'}</button>
+              ))}
+            </div>
+          )}
           {/* Compact tags strip in lightbox */}
           {(image.content_type !== 'photo' || image.animals?.length > 0 || image.ocr?.length > 0) && (
             <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 5, justifyContent: 'center' }}>
               {image.content_type !== 'photo' && (
-                <span style={{ padding: '2px 8px', fontSize: 8, letterSpacing: '0.2em',
+                <span style={{ padding: '2px 8px', fontSize: 10, letterSpacing: '0.12em',
                                textTransform: 'uppercase', fontFamily: 'var(--font-ui)',
                                background: image.content_type === 'screenshot' ? 'var(--c-amber)' : 'var(--c-accent)',
                                color: 'var(--c-bg)', borderRadius: 'var(--radius)' }}>
@@ -935,7 +1094,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
                 </span>
               )}
               {image.animals?.map((a, i) => (
-                <span key={i} style={{ padding: '2px 8px', fontSize: 8, letterSpacing: '0.2em',
+                <span key={i} style={{ padding: '2px 8px', fontSize: 10, letterSpacing: '0.12em',
                                        textTransform: 'uppercase', fontFamily: 'var(--font-ui)',
                                        border: '1px solid var(--c-border2)', color: 'var(--c-text2)',
                                        borderRadius: 'var(--radius)' }}>
@@ -943,7 +1102,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
                 </span>
               ))}
               {image.ocr?.length > 0 && (
-                <span style={{ padding: '2px 8px', fontSize: 8, letterSpacing: '0.2em',
+                <span style={{ padding: '2px 8px', fontSize: 10, letterSpacing: '0.12em',
                                textTransform: 'uppercase', fontFamily: 'var(--font-ui)',
                                border: '1px solid var(--c-border2)', color: 'var(--c-text2)',
                                borderRadius: 'var(--radius)' }}>
@@ -959,6 +1118,6 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
 }
 
 Object.assign(window, {
-  TABS, TAB_TITLES, pad, verdictColor, Chip, Btn, EmptyState,
-  MetricTags, Sidebar, TopBar, DetailPanel, Lightbox,
+  TABS, TAB_TITLES, pad, verdictColor, Chip, Btn, VerdictChips, EmptyState, ConfirmModal,
+  MetricTags, Sidebar, TopBar, DetailPanel, Lightbox, SGDataContext, useSGData,
 });

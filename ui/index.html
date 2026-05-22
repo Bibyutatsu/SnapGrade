@@ -22,17 +22,17 @@
   --c-mute:    #6e6657;
   --c-accent:  #c1440e;
   --c-amber:   #d4a017;
-  --c-keeper:  #6a8c40;
-  --c-danger:  #b03a1a;
+  --c-keeper:  #8bbf4a;
+  --c-danger:  #e0492b;
   --shadow:    0 24px 60px -20px rgba(0,0,0,.8);
   --radius:    0px;
   --font-ui:      "JetBrains Mono", ui-monospace, monospace;
   --font-display: "Instrument Serif", Georgia, serif;
   --grid-cols: repeat(auto-fill, minmax(210px, 1fr));
-  /* Two microtype roles, picked to replace the prior 7/8/9/10px ×
-     0.18–0.32em sprawl. --cap = uppercase tracked caption (section/chip
-     headers); --lbl = glanceable field label sitting next to a data value. */
-  --cap-size: 8px;  --cap-track: .24em;
+  /* Two microtype roles. --cap = uppercase tracked caption (section/chip
+     headers); --lbl = glanceable field label sitting next to a data value.
+     --cap floored at 10px — sub-10 tracked uppercase was illegible. */
+  --cap-size: 10px; --cap-track: .18em;
   --lbl-size: 11px; --lbl-track: .02em;
 }
 html.dark-modern {
@@ -47,7 +47,7 @@ html.dark-modern {
   --c-accent:  #e05a35;
   --c-amber:   #f0b429;
   --c-keeper:  #42b878;
-  --c-danger:  #cc3a1a;
+  --c-danger:  #e23b6d;
   --shadow:    0 8px 32px rgba(0,0,0,.5);
   --radius:    6px;
   --font-ui: "DM Sans", system-ui, sans-serif;
@@ -64,7 +64,7 @@ html.light-pro {
   --c-accent:  #c1440e;
   --c-amber:   #b8860c;
   --c-keeper:  #3d6e28;
-  --c-danger:  #b03a1a;
+  --c-danger:  #c62035;
   --shadow:    0 4px 24px rgba(0,0,0,.1);
   --radius:    6px;
   --font-ui: "DM Sans", system-ui, sans-serif;
@@ -93,12 +93,13 @@ a { color: var(--c-accent); text-decoration: none; }
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.45 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   opacity: .11; mix-blend-mode: overlay;
 }
-body::before {
+/* Vignette is part of the opt-in cinematic atmosphere — only when grain is on
+   (which is itself dark-film only). Default canvas stays neutral so corner
+   thumbnails aren't darkened and the eye isn't biased while judging exposure. */
+html.grain-on body::before {
   content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9998;
   background: radial-gradient(ellipse at 50% 50%, transparent 55%, rgba(0,0,0,.45) 100%);
 }
-html.light-pro body::before { display: none; }
-html.dark-modern body::before { opacity: .5; }
 
 /* Photo-bearing panes paint ABOVE the grain (9999) and vignette (9998) so the
    atmosphere stays on the chrome (sidebar, topbar, cards) but never composites
@@ -131,7 +132,7 @@ html.dark-modern body::before { opacity: .5; }
 /* Sprocket motif moved off the load-bearing nav (it ate ~22px and pulse-noised
    the buttons at the moment of action) onto the topbar's bottom edge, where it's
    pure decoration over no interactive target. */
-html.dark-film .sg-topbar::after {
+html.dark-film.grain-on .sg-topbar::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
   background-image: repeating-linear-gradient(
     90deg, transparent 0 17px, var(--c-bg) 17px 21px, transparent 21px 38px
@@ -172,8 +173,8 @@ html.dark-film .sg-topbar::after {
 html.light-pro .sg-nav-btn.on  { background: rgba(193,68,14,.07); }
 html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
 .sg-nav-n {
-  font-family: var(--font-display); font-style: italic;
-  font-size: 14px; color: var(--c-mute); letter-spacing: 0; text-transform: none; flex-shrink: 0;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
+  text-transform: uppercase; color: var(--c-text2); flex-shrink: 0;
 }
 .sg-nav-btn.on .sg-nav-n { color: var(--c-accent); }
 .sg-nav-label { overflow: hidden; text-overflow: ellipsis; }
@@ -202,10 +203,10 @@ html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
   display: flex; justify-content: space-between;
   padding: 2px 0; font-variant-numeric: tabular-nums;
 }
-.sg-foot-row span:first-child { color: var(--c-mute); text-transform: uppercase; font-size: 8px; letter-spacing: .2em; }
+.sg-foot-row span:first-child { color: var(--c-mute); text-transform: uppercase; font-size: var(--cap-size); letter-spacing: var(--cap-track); }
 .sg-live {
   margin-top: 10px; display: flex; align-items: center; gap: 8px;
-  color: var(--c-amber); font-size: 9px; text-transform: uppercase; letter-spacing: .18em;
+  color: var(--c-amber); font-size: var(--cap-size); text-transform: uppercase; letter-spacing: var(--cap-track);
 }
 .sg-live-dot {
   width: 6px; height: 6px; border-radius: 50%;
@@ -228,7 +229,7 @@ html.dark-modern .sg-nav-btn.on{ background: rgba(224,90,53,.06); }
 @keyframes sg-indet { 0% { left: -30%; } 100% { left: 100%; } }
 .sg-progress-label {
   display: flex; justify-content: space-between;
-  font-size: 8px; letter-spacing: .18em; text-transform: uppercase;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track); text-transform: uppercase;
   color: var(--c-text2); margin-top: 5px; font-variant-numeric: tabular-nums;
 }
 
@@ -245,7 +246,7 @@ html.light-pro .sg-topbar {
   box-shadow: 0 1px 0 var(--c-border), 0 2px 10px rgba(0,0,0,.05);
 }
 .sg-crumbs {
-  font-size: 8px; letter-spacing: .3em;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
   text-transform: uppercase; color: var(--c-mute); margin-bottom: 2px;
 }
 .sg-page-title {
@@ -257,13 +258,8 @@ html.light-pro .sg-topbar {
 /* ── PAGE / CARD ─────────────────────────────────────────────────────────────── */
 .sg-page { padding: 24px 40px 40px; max-width: 960px; }
 .sg-lede {
-  font-family: var(--font-display); font-style: italic;
-  font-size: 19px; line-height: 1.45; color: var(--c-text2);
-  max-width: 52ch; margin-bottom: 28px;
-}
-.sg-lede::before {
-  content: "\201C"; font-size: 52px; color: var(--c-accent);
-  vertical-align: -14px; margin-right: 4px; line-height: 0;
+  font-size: 14px; line-height: 1.5; color: var(--c-text2);
+  max-width: 56ch; margin-bottom: 28px;
 }
 .sg-card {
   border: 1px solid var(--c-border);
@@ -276,17 +272,17 @@ html.light-pro .sg-card {
   border-color: var(--c-border);
 }
 .sg-card-no {
-  position: absolute; top: -12px; left: 20px;
+  position: absolute; top: -8px; left: 20px;
   background: var(--c-bg); padding: 0 10px;
-  font-family: var(--font-display); font-style: italic;
-  font-size: 17px; color: var(--c-accent); line-height: 1;
+  font-size: var(--cap-size); letter-spacing: var(--cap-track);
+  text-transform: uppercase; color: var(--c-accent); line-height: 1;
 }
 html.light-pro .sg-card-no { background: var(--c-bg); }
 .sg-card-h2 {
-  font-family: var(--font-display); font-weight: 400; font-size: 26px;
+  font-weight: 600; font-size: 19px;
   letter-spacing: -0.01em; margin: 0 0 4px; color: var(--c-text);
 }
-.sg-card-h2 em { color: var(--c-accent); font-style: italic; }
+.sg-card-h2 em { color: var(--c-accent); font-style: normal; }
 .sg-card-sub {
   font-size: var(--cap-size); letter-spacing: var(--cap-track);
   text-transform: uppercase; color: var(--c-mute); margin-bottom: 18px;
@@ -367,11 +363,11 @@ html.light-pro .sg-lib-node:hover { background: rgba(0,0,0,.04); }
   background: rgba(193,68,14,.06);
 }
 .sg-lib-node-name {
-  font-family: var(--font-display); font-style: italic;
-  font-size: 15px; color: var(--c-text); display: block; margin-bottom: 2px;
+  font-weight: 600; font-size: 12px; color: var(--c-text);
+  display: block; margin-bottom: 2px;
 }
 .sg-lib-node.on .sg-lib-node-name { color: var(--c-accent); }
-.sg-lib-node-meta { font-size: 9px; color: var(--c-mute); }
+.sg-lib-node-meta { font-size: var(--cap-size); color: var(--c-mute); }
 .sg-stat-strip {
   display: flex; gap: 20px; padding: 8px 20px;
   border-bottom: 1px solid var(--c-border);
@@ -388,8 +384,8 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
 .sg-kbd {
   display: inline-block; padding: 1px 5px;
   border: 1px solid var(--c-border2); background: var(--c-panel);
-  font-family: var(--font-ui); font-size: 8px;
-  letter-spacing: .1em; color: var(--c-text2);
+  font-family: var(--font-ui); font-size: var(--cap-size);
+  letter-spacing: .06em; color: var(--c-text2);
   border-radius: calc(var(--radius) + 1px);
 }
 .sg-grid {
@@ -413,10 +409,38 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
 .sg-thumb-best {
   position: absolute; top: 11px; left: 11px;
   background: var(--c-text); color: var(--c-bg);
-  font-size: 7px; letter-spacing: .22em; padding: 2px 6px;
+  font-size: 9px; letter-spacing: .14em; padding: 2px 6px;
   text-transform: uppercase; z-index: 1;
   border-radius: calc(var(--radius) + 1px);
 }
+
+/* ── CHIP / BTN ─────────────────────────────────────────────────────────────── */
+/* Class-based so hover/focus-visible are real CSS states (the prior inline
+   styles couldn't express :hover and JS-driven hover flickered on fast moves). */
+.sg-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 13px;
+  font-size: var(--cap-size); letter-spacing: .08em; text-transform: uppercase;
+  font-family: var(--font-ui); border: 1px solid var(--c-border2);
+  color: var(--c-text2); background: transparent; border-radius: var(--radius);
+  cursor: pointer; transition: border-color .12s, color .12s, background .12s;
+}
+.sg-chip:hover { color: var(--c-text); border-color: var(--c-text2); }
+.sg-chip.on { color: var(--c-accent); border-color: var(--c-accent); }
+.sg-btn {
+  padding: 9px 20px; font-size: var(--cap-size); letter-spacing: .08em;
+  text-transform: uppercase; font-family: var(--font-ui); background: transparent;
+  border-radius: var(--radius); cursor: pointer;
+  border: 1px solid var(--c-border2); color: var(--c-text2);
+  transition: border-color .15s, color .15s, background .15s, opacity .15s;
+}
+.sg-btn:hover:not(:disabled) { color: var(--c-text); border-color: var(--c-text2); }
+.sg-btn:disabled { opacity: .4; cursor: not-allowed; }
+.sg-btn-primary { border-color: var(--c-accent); color: var(--c-accent); }
+.sg-btn-primary:hover:not(:disabled) { background: rgba(193,68,14,.08); color: var(--c-accent); border-color: var(--c-accent); }
+.sg-btn-danger { border-color: var(--c-danger); color: var(--c-danger); }
+.sg-btn-danger:hover:not(:disabled) { background: rgba(176,58,26,.08); color: var(--c-danger); border-color: var(--c-danger); }
+.sg-btn-solid { border-color: var(--c-accent); color: var(--c-bg); background: var(--c-accent); }
+.sg-btn-solid:hover:not(:disabled) { filter: brightness(1.08); }
 
 /* ── DETAIL PANEL ───────────────────────────────────────────────────────────── */
 .sg-detail {
@@ -470,12 +494,11 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   font-variant-numeric: tabular-nums;
 }
 .sg-reasons {
-  font-family: var(--font-display); font-style: italic;
-  font-size: 14px; color: var(--c-amber); line-height: 1.4;
+  font-size: 12px; color: var(--c-amber); line-height: 1.45;
   padding: 10px 0; border-top: 1px dashed var(--c-border2);
   border-bottom: 1px dashed var(--c-border2);
 }
-.sg-reasons::before { content: "— "; color: var(--c-accent); font-style: normal; }
+.sg-reasons::before { content: "⚑ "; color: var(--c-accent); }
 
 /* ── LIGHTBOX ───────────────────────────────────────────────────────────────── */
 .sg-lightbox {
@@ -491,14 +514,25 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   transition: color .12s; z-index: 1;
 }
 .sg-lb-close:hover { color: var(--c-accent); }
+/* Floating pill, faded by default so it never masks the corner detail you're
+   inspecting; surfaces on lightbox hover, brightens on its own hover. */
 .sg-lb-nav {
   position: absolute; top: 50%; transform: translateY(-50%);
-  font-size: 48px; color: rgba(255,255,255,.25); padding: 20px;
-  transition: color .12s, transform .12s; user-select: none; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 60px; font-size: 28px; line-height: 1;
+  color: var(--c-text); background: rgba(10,9,7,.55);
+  border: 1px solid var(--c-border2); border-radius: var(--radius);
+  opacity: 0; transition: opacity .15s, color .12s, border-color .12s;
+  user-select: none; z-index: 1;
 }
-.sg-lb-nav:hover { color: rgba(255,255,255,.9); transform: translateY(-50%) scale(1.08); }
-.sg-lb-nav.prev { left: 20px; }
-.sg-lb-nav.next { right: 20px; }
+.sg-lightbox:hover .sg-lb-nav { opacity: .5; }
+.sg-lb-nav:hover { opacity: 1; color: var(--c-accent); border-color: var(--c-accent); }
+.sg-lb-nav.prev { left: 16px; }
+.sg-lb-nav.next { right: 16px; }
+@media (prefers-reduced-motion: reduce) {
+  .sg-lb-nav, .sg-thumb, .sg-progress-fill { transition: none; }
+  .sg-live-dot, #sg-boot .sg-boot-spin, .sg-progress-indeterminate { animation: none; }
+}
 .sg-lb-content {
   display: flex; flex-direction: column; align-items: center;
   max-width: 90vw; max-height: 90vh;
@@ -510,18 +544,49 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   border-radius: var(--radius);
 }
 .sg-lb-meta h4 {
-  margin: 0 0 6px; font-family: var(--font-display); font-style: italic;
-  font-size: 20px; color: var(--c-accent); font-weight: 400;
+  margin: 0 0 6px; font-size: 15px; font-weight: 600;
+  letter-spacing: -0.01em; color: var(--c-accent);
 }
 .sg-lb-meta p { margin: 0; font-size: 11px; color: var(--c-text2); }
 
+/* ── MODAL ──────────────────────────────────────────────────────────────────── */
+.sg-modal-backdrop {
+  position: fixed; inset: 0; z-index: 10001;
+  background: rgba(6,5,4,.7); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  animation: sg-fade .14s ease-out;
+}
+.sg-modal {
+  width: min(440px, 92vw); background: var(--c-panel);
+  border: 1px solid var(--c-border2); box-shadow: var(--shadow);
+  border-radius: var(--radius); padding: 22px 24px;
+}
+.sg-modal-title { margin: 0 0 10px; font-size: 16px; font-weight: 600; color: var(--c-text); }
+.sg-modal-body { font-size: 13px; line-height: 1.5; color: var(--c-text2); margin-bottom: 20px; }
+.sg-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
 /* ── BOOT OVERLAY ───────────────────────────────────────────────────────────── */
 #sg-boot {
-  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  position: fixed; inset: 0; display: flex; flex-direction: column; gap: 18px;
+  align-items: center; justify-content: center;
   background: var(--c-bg); color: var(--c-text2); z-index: 9997;
-  font-family: var(--font-display); font-style: italic; font-size: 22px;
+  font-size: 13px; letter-spacing: .02em;
+}
+#sg-boot .sg-boot-spin {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid var(--c-border2); border-top-color: var(--c-accent);
+  animation: sg-spin .8s linear infinite;
 }
 #sg-boot.err { color: var(--c-danger); }
+#sg-boot.err .sg-boot-spin { display: none; }
+#sg-boot .sg-boot-retry {
+  display: none; padding: 7px 16px; border: 1px solid var(--c-border2);
+  color: var(--c-text); font-size: var(--cap-size); letter-spacing: var(--cap-track);
+  text-transform: uppercase; border-radius: var(--radius);
+}
+#sg-boot.err .sg-boot-retry { display: inline-block; }
+#sg-boot .sg-boot-retry:hover { border-color: var(--c-accent); color: var(--c-accent); }
+@keyframes sg-spin { to { transform: rotate(360deg); } }
 
 /* ── ANIMATIONS ─────────────────────────────────────────────────────────────── */
 @keyframes sg-pop  { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -534,7 +599,11 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
 <body>
   <div id="root"></div>
   <div id="sg-grain"></div>
-  <div id="sg-boot">loading the darkroom&hellip;</div>
+  <div id="sg-boot">
+    <div class="sg-boot-spin"></div>
+    <div class="sg-boot-msg">Loading your library&hellip;</div>
+    <button class="sg-boot-retry" onclick="location.reload()">Retry</button>
+  </div>
 
   <!-- React 18 + Babel -->
   <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>

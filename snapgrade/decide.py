@@ -23,6 +23,10 @@ class Thresholds:
 
     # Eyes
     reject_closed_eyes: bool = True
+    # A frame is only rejected for closed eyes when the sole subject blinked, or
+    # at least this fraction of the (primary) faces are closed — so one person
+    # blinking in a group portrait no longer kills the frame.
+    closed_eyes_min_ratio: float = 0.5
     # Continuous eye-openness scoring band: EAR ear_closed..ear_open maps to 0..1.
     # The hard closed-eye *gate* (any_closed) is owned by the analyzer
     # (face_expression.CLOSED_EAR_THRESHOLD); these are the decision layer's
@@ -33,8 +37,14 @@ class Thresholds:
     # Composition
     horizon_warn_deg: float = 3.0  # surfaces a warning, never auto-rejects
 
-    # Subject-sharpness overrides (face subjects only).
-    soft_face_lap_max: float = 50.0      # laplacian var below this on a face = soft
+    # Depth
+    accept_focus_on_background: bool = False  # don't reject foreground-soft frames
+
+    # Subject-sharpness overrides (face subjects only). soft_face_lap_max is tuned
+    # for a face whose long edge is ~SOFT_FACE_REF_PX of the decoded long edge;
+    # smaller faces carry less high-frequency detail, so the effective threshold
+    # scales down with the face's rendered size (see _soft_face_threshold).
+    soft_face_lap_max: float = 50.0      # laplacian var below this on a reference face = soft
     motion_blur_anisotropy: float = 0.45  # FFT anisotropy above this = directional (motion) blur
 
     # Weights for the combined "quality" score used to assign stars.
@@ -48,9 +58,13 @@ class Thresholds:
 @dataclass
 class Verdict:
     verdict: str            # keeper | review | reject
-    stars: int              # 1..5
+    stars: int              # 0..5 (0 = reject, no rating)
     label: str | None       # color label
     reasons: list[str] = field(default_factory=list)
+    # Informational flags that did NOT drive the verdict (horizon tilt, colour
+    # cast). Kept separate from `reasons` so the UI can style them as advisories
+    # rather than as problems that explain a downgrade.
+    warnings: list[str] = field(default_factory=list)
     score: float = 0.0      # 0..1 combined quality
 
 
@@ -65,16 +79,55 @@ def _exposure_score(exposure: dict[str, Any]) -> float:
     return float(0.6 * mid_bonus + 0.4 * dr_bonus)
 
 
-def _eyes_score(eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float = 0.35) -> float:
+def _eyes_score(eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float = 0.35) -> float | None:
+    """Eye-openness in 0..1, or None when there's no usable signal.
+
+    Returning None (no faces, or landmarks failed so min_ear is missing) lets the
+    caller drop the term and renormalize — previously these silently scored 0.5,
+    biasing the distribution between libraries with and without face landmarks.
+    """
     if eyes.get("faces", 0) == 0:
-        return 1.0  # no faces → eyes can't penalize
+        return None
     if eyes.get("any_closed"):
         return 0.0
     min_ear = eyes.get("min_ear")
     if min_ear is None:
-        return 0.5
+        return None
     span = max(ear_open - ear_closed, 1e-6)
     return max(0.0, min(1.0, (min_ear - ear_closed) / span))
+
+
+def _composition_score_opt(comp: dict[str, Any]) -> float | None:
+    """Composition score, or None when no horizon/thirds data exists."""
+    if comp.get("horizon_tilt_deg") is None and comp.get("thirds_offset") is None:
+        return None
+    return _composition_score(comp)
+
+
+# A face whose long edge is this fraction of the decoded long edge is the
+# reference size soft_face_lap_max was tuned against.
+SOFT_FACE_REF_FRAC = 0.35
+
+
+def _soft_face_threshold(base: float, metrics: dict[str, Any]) -> float:
+    """Scale soft_face_lap_max by the face's rendered size.
+
+    Laplacian variance falls with the pixel size of the region, so comparing a
+    small face in a 2000px decode and a large face in a 4000px decode against the
+    same constant is wrong. Scale the threshold by (face_long / decoded_long)
+    relative to the reference fraction, clamped to a sane band.
+    """
+    decoded = metrics.get("decoded_size") or []
+    faces = [s for s in (metrics.get("subjects") or []) if s.get("kind") == "face" and s.get("bbox")]
+    if len(decoded) != 2 or not faces:
+        return base
+    decoded_long = max(decoded) or 1
+    # Largest face drives subject-aware sharpness (pipeline picks the biggest).
+    bw, bh = max((s["bbox"][2], s["bbox"][3]) for s in faces)
+    face_long = max(bw, bh)
+    frac = face_long / decoded_long
+    scale = max(0.4, min(1.5, frac / SOFT_FACE_REF_FRAC))
+    return base * scale
 
 
 def _composition_score(comp: dict[str, Any]) -> float:
@@ -101,18 +154,26 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     sharp_score = (subject_sharp or sharp).get("score", 0.0)
     exposure_score = _exposure_score(exposure)
     eyes_score = _eyes_score(eyes, t.ear_closed, t.ear_open)
-    comp_score = _composition_score(comp)
-
+    comp_score = _composition_score_opt(comp)
     aesthetic_score = metrics.get("aesthetic_score")
-    score = (
-        t.w_sharpness * sharp_score
-        + t.w_exposure * exposure_score
-        + t.w_eyes * eyes_score
-        + t.w_composition * comp_score
-        + t.w_aesthetic * (aesthetic_score if aesthetic_score is not None else 0.5)
-    )
+
+    # Weighted score over only the terms that have a real signal — missing
+    # aesthetic / eyes / composition drop out and the remaining weights are
+    # renormalized, so the same photo scores the same regardless of which
+    # optional models ran.
+    terms = [
+        (t.w_sharpness, sharp_score),
+        (t.w_exposure, exposure_score),
+        (t.w_eyes, eyes_score),
+        (t.w_composition, comp_score),
+        (t.w_aesthetic, aesthetic_score),
+    ]
+    present = [(w, v) for w, v in terms if v is not None]
+    total_w = sum(w for w, _ in present) or 1.0
+    score = sum(w * v for w, v in present) / total_w
 
     reasons: list[str] = []
+    warnings: list[str] = []
     verdict = "keeper"
 
     # When a real face is the subject and its sharpness is poor, that's a
@@ -124,7 +185,10 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     lap_val = ss.get("laplacian_var", 0.0)
     aniso = ss.get("fft_anisotropy", 0.0)
     blur_angle = ss.get("blur_angle_deg")
-    soft_face = face_subject and subject_sharp is not None and lap_val < t.soft_face_lap_max
+    soft_face = (
+        face_subject and subject_sharp is not None
+        and lap_val < _soft_face_threshold(t.soft_face_lap_max, metrics)
+    )
     if aniso > t.motion_blur_anisotropy:
         blur_kind = f"motion blur (~{blur_angle:.0f}°)" if blur_angle is not None else "motion blur"
     else:
@@ -139,16 +203,28 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     if sharp_score < t.sharp_reject or (soft_face and sharp_score < t.sharp_keeper):
         verdict = "reject"
         reasons.append(blur_kind)
-    elif focus_on_background:
+    elif focus_on_background and not t.accept_focus_on_background:
         verdict = "reject"
         reasons.append("subject out of focus (background sharp)")
     elif sharp_score < t.sharp_keeper:
         verdict = "review"
         reasons.append("slightly soft")
 
+    # Closed eyes reject only when the lone subject blinked, or a meaningful
+    # share of the primary faces are closed — not for one blink in a group.
     if t.reject_closed_eyes and eyes.get("any_closed"):
-        verdict = "reject"
-        reasons.append("eyes closed")
+        n_faces = eyes.get("faces", 0) or 0
+        n_closed = eyes.get("closed_count")
+        if n_closed is None:  # pre-closed_count data: fall back to old behaviour
+            reject_eyes = True
+        else:
+            ratio = n_closed / n_faces if n_faces else 1.0
+            reject_eyes = n_faces <= 1 or ratio >= t.closed_eyes_min_ratio
+        if reject_eyes:
+            verdict = "reject"
+            reasons.append("eyes closed" if n_faces <= 1 else f"eyes closed ({n_closed}/{n_faces})")
+        else:
+            warnings.append(f"{eyes.get('closed_count')} of {n_faces} subjects blinking")
 
     if exposure.get("overexposed") and not t.accept_overexposed:
         if verdict == "keeper":
@@ -159,16 +235,18 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
             verdict = "review"
         reasons.append("underexposed")
 
+    # Horizon tilt and colour cast are advisories, not verdict drivers — they go
+    # to `warnings` so the UI doesn't render them as problems on a keeper.
     tilt = comp.get("horizon_tilt_deg")
     if tilt is not None and abs(tilt) > t.horizon_warn_deg:
-        reasons.append(f"horizon tilt {tilt:+.1f}°")
+        warnings.append(f"horizon tilt {tilt:+.1f}°")
 
-    # Strong white-balance cast — informational, never auto-rejects.
     color = metrics.get("color") or {}
     if color.get("cast_hue") and color.get("cast_strength", 0.0) > 0.25:
-        reasons.append(f"{color['cast_hue']} colour cast")
+        warnings.append(f"{color['cast_hue']} colour cast")
 
-    # Bin the continuous score into 1..5 stars (regardless of verdict).
+    # Bin the continuous score into stars, then clamp to the verdict band so the
+    # two signals can never disagree (no 1★ keeper, no starred reject).
     if score >= 0.80:
         stars = 5
     elif score >= 0.65:
@@ -180,6 +258,14 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     else:
         stars = 1
 
+    if verdict == "reject":
+        stars = 0                       # rejects carry no rating
+    elif verdict == "keeper":
+        stars = max(stars, 3)           # a keeper is at least 3★
+    else:  # review
+        stars = max(2, min(stars, 4))
+
     label = {"keeper": "green", "review": "yellow", "reject": "red"}[verdict]
 
-    return Verdict(verdict=verdict, stars=stars, label=label, reasons=reasons, score=score)
+    return Verdict(verdict=verdict, stars=stars, label=label,
+                   reasons=reasons, warnings=warnings, score=score)

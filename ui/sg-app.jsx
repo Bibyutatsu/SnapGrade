@@ -1,12 +1,12 @@
 // SnapGrade — App root + Tweaks
 
-const { useState, useEffect } = React;
+const { useState, useEffect, useCallback } = React;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark-film",
   "triageLayout": "grid",
   "gridColumns": "auto",
-  "grainOverlay": true
+  "grainOverlay": false
 }/*EDITMODE-END*/;
 
 function App() {
@@ -30,6 +30,17 @@ function App() {
   // Bumped when SG_DATA is refreshed so screens that read window.SG_DATA at
   // mount (Triage, Bursts, Faces, XMP) re-mount with fresh data.
   const [dataVersion, setDataVersion] = useState(0);
+
+  // Single refresh entry point screens can call instead of location.reload()
+  // (which throws away scroll, active library, expanded burst, etc.). Refetches
+  // SG_DATA and bumps the remount key so screens pick up fresh data in place.
+  const refreshData = useCallback(async () => {
+    await window.SG_API.refresh().catch(() => {});
+    const s = await window.SG_API.refreshStats().catch(() => null);
+    if (s) setStats(s);
+    setDataVersion(v => v + 1);
+  }, []);
+  useEffect(() => { window.SG_REFRESH = refreshData; }, [refreshData]);
   // Poll /api/stats while ingest is running so the sidebar's live indicator and
   // counts reflect reality without a full reload. When an ingest finishes
   // (running flips true → false), do a full SG_DATA refresh so Triage picks up
@@ -70,14 +81,25 @@ function App() {
     document.documentElement.style.setProperty('--grid-cols', cols);
   }, [t.gridColumns]);
 
-  // Grain overlay visibility
+  // Grain + vignette + sprocket are one opt-in atmosphere, dark-film only.
+  // The grain-on class gates the CSS-only vignette/sprocket; #sg-grain toggles directly.
   useEffect(() => {
+    const on = !!t.grainOverlay && t.theme === 'dark-film';
     const el = document.getElementById('sg-grain');
-    if (el) el.style.display = t.grainOverlay && t.theme === 'dark-film' ? 'block' : 'none';
+    if (el) el.style.display = on ? 'block' : 'none';
+    document.documentElement.classList.toggle('grain-on', on);
   }, [t.grainOverlay, t.theme]);
 
+  // Provide cross-screen data through context (single source) — value identity
+  // changes with dataVersion so consumers re-render when SG_DATA is refreshed.
+  const dataCtx = React.useMemo(() => ({
+    libraries: window.SG_DATA.MOCK_LIBRARIES,
+    stats: MOCK_STATS,
+    refresh: refreshData,
+  }), [dataVersion, MOCK_STATS, refreshData]);
+
   return (
-    <>
+    <SGDataContext.Provider value={dataCtx}>
       <div className="sg-shell" style={{ gridTemplateColumns: `${collapsed ? 56 : 220}px 1fr` }}>
         <Sidebar
           tab={tab} setTab={setTab}
@@ -97,7 +119,7 @@ function App() {
             onThemeChange={v => setTweak('theme', v)}
           />
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
-            {tab === 'library'  && <LibraryScreen  key={`lib-${dataVersion}`}  stats={MOCK_STATS} />}
+            {tab === 'library'  && <LibraryScreen  key={`lib-${dataVersion}`}  stats={MOCK_STATS} setTab={setTab} />}
             {tab === 'triage'   && <TriageScreen   key={`tri-${dataVersion}`}  layout={t.triageLayout} setLayout={v => setTweak('triageLayout', v)}
                                                     activeLib={activeLib} setActiveLib={setActiveLib}
                                                     panelOpen={panelOpen} setPanelOpen={setPanelOpen} />}
@@ -146,12 +168,12 @@ function App() {
         />
         <TweakSection label="Effects" />
         <TweakToggle
-          label="Film grain"
+          label="Film grain + vignette (Cinematic only)"
           value={t.grainOverlay}
           onChange={v => setTweak('grainOverlay', v)}
         />
       </TweaksPanel>
-    </>
+    </SGDataContext.Provider>
   );
 }
 

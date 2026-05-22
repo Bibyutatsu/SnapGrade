@@ -351,15 +351,75 @@ def _hnsw_cluster(embs: np.ndarray, threshold: float) -> list[int]:
     return out
 
 
+def _normalize(v: np.ndarray) -> np.ndarray:
+    n = float(np.linalg.norm(v))
+    return v / n if n > 1e-8 else v
+
+
+def _cluster_centroids(ids: list[int], embs: np.ndarray, cluster_ids: list[int]) -> dict[int, np.ndarray]:
+    """Mean (re-normalized) embedding per cluster id."""
+    by_cid: dict[int, list[np.ndarray]] = {}
+    for emb, cid in zip(embs, cluster_ids):
+        by_cid.setdefault(int(cid), []).append(emb)
+    return {cid: _normalize(np.mean(vs, axis=0)) for cid, vs in by_cid.items()}
+
+
+def _reassign_labels(
+    conn: sqlite3.Connection,
+    old_centroids: dict[int, np.ndarray],
+    new_centroids: dict[int, np.ndarray],
+    min_sim: float,
+) -> None:
+    """Re-anchor each pre-existing label to the new cluster whose centroid is
+    nearest the old labeled centroid, so manual names survive a full re-cluster
+    (Apple/Google-Photos-style identity persistence). Labels whose person no
+    longer has a confident match are dropped rather than mis-attached."""
+    labels = get_labels(conn)  # {old_cid: label}
+    if not labels:
+        return
+    # Greedy nearest-match, biggest/most-confident first; one new cluster per label.
+    taken: set[int] = set()
+    matches: dict[int, str] = {}  # new_cid -> label
+    candidates = [(old_cid, lbl) for old_cid, lbl in labels.items() if old_cid in old_centroids]
+    for old_cid, lbl in candidates:
+        oc = old_centroids[old_cid]
+        best_cid, best_sim = None, -1.0
+        for new_cid, nc in new_centroids.items():
+            if new_cid in taken:
+                continue
+            sim = float(np.dot(oc, nc))
+            if sim > best_sim:
+                best_cid, best_sim = new_cid, sim
+        if best_cid is not None and best_sim >= min_sim:
+            taken.add(best_cid)
+            matches[best_cid] = lbl
+    # Rewrite labels atomically: clear old, apply re-anchored.
+    conn.execute("DELETE FROM cluster_labels")
+    for new_cid, lbl in matches.items():
+        set_label(conn, new_cid, lbl)
+
+
 def cluster(conn: sqlite3.Connection, cfg: FaceClusterConfig | None = None) -> int:
-    """Full re-cluster of all faces. Uses HNSW when available, else greedy."""
+    """Full re-cluster of all faces. Uses HNSW when available, else greedy.
+
+    Manual cluster labels are re-anchored to the new clusters by centroid
+    nearest-match (see _reassign_labels), so renumbering doesn't orphan names.
+    """
     cfg = cfg or FaceClusterConfig()
     _ensure_schema(conn)
-    rows = conn.execute("SELECT id, embedding FROM faces").fetchall()
+    rows = conn.execute("SELECT id, embedding, cluster_id FROM faces").fetchall()
     if not rows:
         return 0
     ids = [int(r["id"]) for r in rows]
     embs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+
+    # Snapshot centroids of currently-labeled clusters before we renumber.
+    labels = get_labels(conn)
+    old_cluster_ids = [int(r["cluster_id"]) if r["cluster_id"] is not None else -1 for r in rows]
+    old_centroids = {
+        cid: c for cid, c in _cluster_centroids(ids, embs, old_cluster_ids).items()
+        if cid in labels
+    }
 
     try:
         import hnswlib  # noqa: F401
@@ -367,11 +427,14 @@ def cluster(conn: sqlite3.Connection, cfg: FaceClusterConfig | None = None) -> i
     except Exception:
         cluster_ids = _greedy_cluster(embs, cfg.similarity_threshold)
 
+    new_centroids = _cluster_centroids(ids, embs, cluster_ids)
     with db.transaction(conn):
         conn.executemany(
             "UPDATE faces SET cluster_id=? WHERE id=?",
             [(int(cid), fid) for fid, cid in zip(ids, cluster_ids)],
         )
+        if old_centroids:
+            _reassign_labels(conn, old_centroids, new_centroids, cfg.similarity_threshold)
     return len(set(cluster_ids))
 
 

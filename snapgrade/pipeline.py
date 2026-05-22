@@ -357,6 +357,7 @@ def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtim
         result.verdict.stars,
         result.verdict.label,
         result.verdict.reasons,
+        result.verdict.warnings,
     )
 
 

@@ -38,7 +38,7 @@ Single source of truth: `~/.snapgrade/library.db` (SQLite, WAL). Files on disk a
 | Thumbnail cache | [snapgrade/thumb.py](snapgrade/thumb.py) | Content-hash keyed, JPEG q85. |
 | Pipeline orchestrator (walk → analyze → persist) | [snapgrade/pipeline.py](snapgrade/pipeline.py) | mtime-based skip; single entry: `analyze_folder`. |
 | FastAPI backend (stats, images, ingest, organize, reclassify) | [snapgrade/api.py](snapgrade/api.py) | Mounts `ui/` as static when present. |
-| Single-page React UI (Library / Triage / Organize / Settings) | [ui/index.html](ui/index.html) + [ui/app.js](ui/app.js) | esm.sh + Tailwind CDN; no build step. |
+| Single-page React UI (Library / Triage / Bursts / Faces / XMP / Organize / Settings) | [ui/index.html](ui/index.html) + `ui/*.jsx` (tweaks-panel → sg-data → sg-ui → sg-triage → sg-screens → sg-app) | React 18 UMD + Babel-standalone in-browser; no build step. Load order matters (declared in index.html). |
 | CLI (Typer + Rich) | [snapgrade/cli.py](snapgrade/cli.py) | Commands: `analyze`, `show`, `write-xmp`, `group`, `tokens`, `organize`, `events`, `faces`, `report`, `serve`. |
 
 ## Build & test

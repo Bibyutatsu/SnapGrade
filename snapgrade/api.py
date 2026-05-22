@@ -176,7 +176,8 @@ def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) ->
     """
     existing = {str(p) for p in pipeline.walk_images(root)}
     catalogued = conn.execute(
-        "SELECT id, path, content_hash FROM images WHERE library_id=?", (library_id,)
+        "SELECT id, path, content_hash, size_bytes, capture_time, camera_model "
+        "FROM images WHERE library_id=?", (library_id,)
     ).fetchall()
     missing = [r for r in catalogued if r["path"] not in existing]
     if not missing:
@@ -187,6 +188,7 @@ def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) ->
     catalogued_paths = {r["path"] for r in catalogued}
     unknown_disk = [p for p in existing if p not in catalogued_paths]
     with db.transaction(conn):
+        used_disk: set[str] = set()
         if unknown_disk:
             disk_by_hash: dict[str, str] = {}
             for p in unknown_disk:
@@ -200,6 +202,36 @@ def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) ->
                     conn.execute("UPDATE images SET path=? WHERE id=?", (disk_by_hash[h], int(r["id"])))
                     rehoused += 1
                     rehoused_ids.add(int(r["id"]))
+                    used_disk.add(disk_by_hash[h])
+
+        # Sibling fallback: a still-missing photo may have been re-encoded (new
+        # content hash) but renamed/moved — match it to a leftover disk file by
+        # (size, capture_time, camera_model). Unique matches only, and only when
+        # the cheap hash sweep didn't already place it.
+        leftover = [p for p in unknown_disk if p not in used_disk]
+        unresolved = [r for r in missing if int(r["id"]) not in rehoused_ids]
+        if leftover and unresolved:
+            from . import exif as _exif
+
+            disk_by_sig: dict[tuple, list[str]] = {}
+            for p in leftover:
+                try:
+                    ex = _exif.read_exif(Path(p))
+                    ct = ex.capture_time.isoformat() if ex.capture_time else None
+                    sig = (Path(p).stat().st_size, ct, ex.camera_model)
+                except Exception:
+                    continue
+                if None in sig[1:]:  # need both EXIF fields to disambiguate
+                    continue
+                disk_by_sig.setdefault(sig, []).append(p)
+            for r in unresolved:
+                sig = (r["size_bytes"], r["capture_time"], r["camera_model"])
+                cands = disk_by_sig.get(sig)
+                if cands and len(cands) == 1 and None not in sig[1:]:
+                    conn.execute("UPDATE images SET path=? WHERE id=?", (cands[0], int(r["id"])))
+                    rehoused += 1
+                    rehoused_ids.add(int(r["id"]))
+
         still_missing = [int(r["id"]) for r in missing if int(r["id"]) not in rehoused_ids]
         if still_missing:
             placeholders = ",".join("?" for _ in still_missing)
@@ -485,7 +517,7 @@ def list_images(
     sql = (
         "SELECT i.id, i.path, i.capture_time, i.camera_model, i.lens_model, "
         "i.iso, i.f_number, i.exposure_time, i.width, i.height, i.content_hash, i.library_id, "
-        "v.verdict, v.stars, v.label, v.reasons, v.user_override, "
+        "v.verdict, v.stars, v.label, v.reasons, v.warnings, v.user_override, "
         "bm.burst_id, bm.is_best, "
         "json_extract(m.json, '$.content_type.class') AS content_type, "
         "json_extract(m.json, '$.scene.primary') AS scene, "
@@ -537,6 +569,7 @@ def list_images(
                 "stars": r["stars"],
                 "label": r["label"],
                 "reasons": json.loads(r["reasons"]) if r["reasons"] else [],
+                "warnings": json.loads(r["warnings"]) if r["warnings"] else [],
                 "user_override": bool(r["user_override"]) if r["user_override"] is not None else False,
                 "burst_id": r["burst_id"],
                 "is_best": bool(r["is_best"]) if r["is_best"] is not None else False,
@@ -560,7 +593,7 @@ def list_images(
 def get_image(image_id: int) -> dict[str, Any]:
     conn = _conn()
     row = conn.execute(
-        "SELECT i.*, v.verdict, v.stars, v.label, v.reasons, v.user_override, m.json AS metrics_json "
+        "SELECT i.*, v.verdict, v.stars, v.label, v.reasons, v.warnings, v.user_override, m.json AS metrics_json "
         "FROM images i "
         "LEFT JOIN verdicts v ON v.image_id = i.id "
         "LEFT JOIN metrics m ON m.image_id = i.id "
@@ -572,6 +605,7 @@ def get_image(image_id: int) -> dict[str, Any]:
     out = {k: row[k] for k in row.keys() if k != "metrics_json"}
     out["metrics"] = json.loads(row["metrics_json"]) if row["metrics_json"] else {}
     out["reasons"] = json.loads(row["reasons"]) if row["reasons"] else []
+    out["warnings"] = json.loads(row["warnings"]) if row["warnings"] else []
     return out
 
 
@@ -645,6 +679,67 @@ def update_verdict(image_id: int, payload: VerdictUpdate) -> dict[str, Any]:
         "UPDATE verdicts SET verdict=?, stars=?, label=?, user_override=1 WHERE image_id=?",
         (new_verdict, new_stars, new_label, image_id),
     )
+    return {"ok": True}
+
+
+class BatchVerdictUpdate(BaseModel):
+    image_ids: list[int]
+    verdict: str | None = None
+    stars: int | None = None
+    label: str | None = None
+
+
+@app.post("/api/verdicts", dependencies=[Depends(require_local)])
+def update_verdicts_batch(payload: BatchVerdictUpdate) -> dict[str, Any]:
+    """Apply one verdict/stars/label to many images in a single transaction —
+    powers multi-select bulk culling. Only the provided fields change; each
+    touched row is flagged user_override=1 so reclassify won't stomp it."""
+    if not payload.image_ids:
+        return {"ok": True, "updated": 0}
+    conn = _conn()
+    updated = 0
+    with db.transaction(conn):
+        for image_id in payload.image_ids:
+            row = conn.execute(
+                "SELECT verdict, stars, label FROM verdicts WHERE image_id = ?", (image_id,)
+            ).fetchone()
+            if not row:
+                continue
+            new_verdict = payload.verdict or row["verdict"]
+            new_stars = payload.stars if payload.stars is not None else row["stars"]
+            new_label = payload.label if payload.label is not None else row["label"]
+            conn.execute(
+                "UPDATE verdicts SET verdict=?, stars=?, label=?, user_override=1 WHERE image_id=?",
+                (new_verdict, new_stars, new_label, image_id),
+            )
+            updated += 1
+    return {"ok": True, "updated": updated}
+
+
+@app.post("/api/images/{image_id}/reveal", dependencies=[Depends(require_local)])
+def reveal_in_finder(image_id: int) -> dict[str, Any]:
+    """Reveal the source file in macOS Finder — a culling tool needs to jump to
+    the actual file. No-op-safe on non-macOS (returns 501)."""
+    import subprocess
+
+    conn = _conn()
+    resolved = _resolve_image_path(conn, image_id)
+    if resolved is None:
+        exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
+        raise HTTPException(410 if exists else 404, "source file missing")
+    path, _ = resolved
+    script = (
+        'tell application "Finder"\n'
+        f'  reveal POSIX file "{path}"\n'
+        "  activate\n"
+        "end tell"
+    )
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        raise HTTPException(501, "Reveal in Finder requires macOS (osascript)")
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"Finder reveal failed: {e.stderr.strip() or e}")
     return {"ok": True}
 
 
@@ -991,8 +1086,10 @@ class ThresholdsModel(BaseModel):
     sharp_keeper: float = 0.55
     sharp_reject: float = 0.30
     reject_closed_eyes: bool = True
+    closed_eyes_min_ratio: float = 0.5
     accept_overexposed: bool = False
     accept_underexposed: bool = False
+    accept_focus_on_background: bool = False
     horizon_warn_deg: float = 3.0
 
 
@@ -1010,7 +1107,7 @@ def reclassify(t: ThresholdsModel) -> dict[str, Any]:
         for r in rows:
             metrics = json.loads(r["json"])
             v = decide.decide(metrics, thresholds)
-            db.save_verdict(conn, int(r["image_id"]), v.verdict, v.stars, v.label, v.reasons)
+            db.save_verdict(conn, int(r["image_id"]), v.verdict, v.stars, v.label, v.reasons, v.warnings)
             updated += 1
     return {"updated": updated}
 

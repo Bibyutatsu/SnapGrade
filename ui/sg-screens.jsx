@@ -5,14 +5,14 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
 // ── Shared library filter bar ─────────────────────────────────────────────────
 function LibraryFilterBar({ activeLib, setActiveLib, counts }) {
-  const { MOCK_LIBRARIES } = window.SG_DATA;
+  const { libraries: MOCK_LIBRARIES } = useSGData();
   return (
     <div style={{
       display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
       padding: '9px 20px', borderBottom: '1px solid var(--c-border)',
       background: 'var(--c-panel2)', flexShrink: 0,
     }}>
-      <span style={{ fontSize: 8, letterSpacing: '0.28em', textTransform: 'uppercase',
+      <span style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
                      color: 'var(--c-mute)', marginRight: 4 }}>Folder</span>
       <Chip on={activeLib === null} onClick={() => setActiveLib(null)}>
         All {counts?.all != null && <span style={{ marginLeft: 5, opacity: 0.55 }}>{counts.all}</span>}
@@ -28,7 +28,7 @@ function LibraryFilterBar({ activeLib, setActiveLib, counts }) {
 }
 
 // ── Library Screen ─────────────────────────────────────────────────────────
-function LibraryScreen({ stats }) {
+function LibraryScreen({ stats, setTab }) {
   const { MOCK_LIBRARIES } = window.SG_DATA;
   const [folder, setFolder] = useState('');
   const [msg, setMsg]       = useState('');
@@ -38,16 +38,33 @@ function LibraryScreen({ stats }) {
   const [results, setResults] = useState(null);  // null = no search yet, [] = empty results
   const [searching, setSearching] = useState(false);
   const [searchMsg, setSearchMsg] = useState('');
+  const [recent, setRecent] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('sg.recentSearches') || '[]'); } catch { return []; }
+  });
+  const pushRecent = q => setRecent(prev => {
+    const next = [q, ...prev.filter(x => x !== q)].slice(0, 6);
+    localStorage.setItem('sg.recentSearches', JSON.stringify(next));
+    return next;
+  });
+  // Hand the result ids to Triage as a scoped view instead of a tab per result.
+  const openInTriage = () => {
+    if (!results || !results.length) return;
+    window.SG_SEARCH = { query, ids: results.map(r => r.image_id) };
+    setTab && setTab('triage');
+  };
   const [statsOpen, setStatsOpen] = useState(false);  // stats collapsed by default for returning users
+  const [confirmRemove, setConfirmRemove] = useState(null);  // {id, name} pending removal
 
-  async function runSearch() {
-    const q = query.trim();
+  async function runSearch(qOverride) {
+    const q = (qOverride ?? query).trim();
     if (!q) return;
+    if (qOverride != null) setQuery(qOverride);
     setSearching(true);
     setSearchMsg('');
     try {
       const items = await window.SG_API.search(q, { k: 24 });
       setResults(items);
+      if (items.length) pushRecent(q);
       if (!items.length) {
         setSearchMsg('No matches. Re-run analyze with SNAPGRADE_ENABLE_SEMANTIC=1 if no embeddings exist yet.');
       }
@@ -101,7 +118,7 @@ function LibraryScreen({ stats }) {
           try { await window.SG_API.runFaces(); }
           catch (e) { setMsg(`face clustering launch failed: ${e.message}`); return; }
         }
-        setMsg('post-ingest steps started · watch the sidebar for progress');
+        setMsg('post-ingest steps started · progress shows in the sidebar');
       }
     } catch (e) { setMsg(`ingest failed: ${e.message}`); }
   }
@@ -110,10 +127,10 @@ function LibraryScreen({ stats }) {
     try { await window.SG_API.syncLibrary(id); setMsg(`sync started for library #${id}`); }
     catch (e) { setMsg(`sync failed: ${e.message}`); }
   }
-  async function removeLib(id, name) {
-    if (!confirm(`Remove "${name}" from the catalogue? Disk files stay put.`)) return;
+  async function removeLib(id) {
+    setConfirmRemove(null);
     setMsg('');
-    try { await window.SG_API.removeLibrary(id); setMsg(`removed library #${id} — reloading`); setTimeout(()=>location.reload(), 600); }
+    try { await window.SG_API.removeLibrary(id); setMsg(`removed library #${id}`); await window.SG_REFRESH?.(); }
     catch (e) { setMsg(`remove failed: ${e.message}`); }
   }
 
@@ -144,23 +161,38 @@ function LibraryScreen({ stats }) {
             className="sg-folder-display"
             style={{ flex:1, minHeight:'auto', padding:'9px 12px', color:'var(--c-text)', fontStyle:'normal' }}
           />
-          <Btn variant="primary" disabled={!query.trim() || searching} onClick={runSearch}>
+          <Btn variant="primary" disabled={!query.trim() || searching} onClick={() => runSearch()}>
             {searching ? 'Searching…' : 'Search'}
           </Btn>
         </div>
+        {recent.length > 0 && !results && (
+          <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap', marginTop:-14, marginBottom:18 }}>
+            <span style={{ fontSize:'var(--cap-size)', letterSpacing:'var(--cap-track)', textTransform:'uppercase', color:'var(--c-mute)' }}>Recent</span>
+            {recent.map(q => <Chip key={q} onClick={() => runSearch(q)}>{q}</Chip>)}
+          </div>
+        )}
         {searchMsg && <div className="sg-toast" style={{ marginTop:-14, marginBottom:18 }}>{searchMsg}</div>}
         {results && results.length > 0 && (
-          <div style={{ marginBottom:24, display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10 }}>
-            {results.map(r => (
-              <a key={r.image_id} href={`/api/images/${r.image_id}/preview`} target="_blank" rel="noreferrer"
-                 style={{ position:'relative', display:'block', aspectRatio:'1/1', overflow:'hidden', borderRadius:'var(--radius)', border:'1px solid var(--c-border2)' }}>
-                <img src={r.thumb} alt="" loading="lazy" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
-                <span style={{ position:'absolute', bottom:4, right:4, fontSize:9, padding:'2px 6px', background:'rgba(0,0,0,0.7)', color:'#fff', borderRadius:'var(--radius)', letterSpacing:'0.05em', fontVariantNumeric:'tabular-nums' }}>
-                  {r.score.toFixed(3)}
-                </span>
-              </a>
-            ))}
-          </div>
+          <>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+              <span style={{ fontSize:'var(--cap-size)', letterSpacing:'var(--cap-track)', textTransform:'uppercase', color:'var(--c-mute)' }}>
+                {results.length} matches for “{query}”
+              </span>
+              <Btn variant="primary" onClick={openInTriage} style={{ padding:'5px 13px' }}>Open in Triage →</Btn>
+              <button onClick={() => setResults(null)} style={{ fontSize:'var(--cap-size)', letterSpacing:'var(--cap-track)', textTransform:'uppercase', color:'var(--c-mute)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>clear ×</button>
+            </div>
+            <div style={{ marginBottom:24, display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:10 }}>
+              {results.map(r => (
+                <a key={r.image_id} href={`/api/images/${r.image_id}/preview?long_edge=2000`} target="_blank" rel="noreferrer"
+                   style={{ position:'relative', display:'block', aspectRatio:'1/1', overflow:'hidden', borderRadius:'var(--radius)', border:'1px solid var(--c-border2)' }}>
+                  <img src={r.thumb} alt="" loading="lazy" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                  <span style={{ position:'absolute', bottom:4, right:4, fontSize:10, padding:'2px 6px', background:'rgba(0,0,0,0.7)', color:'#fff', borderRadius:'var(--radius)', letterSpacing:'0.05em', fontVariantNumeric:'tabular-nums' }}>
+                    {r.score.toFixed(3)}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </>
         )}
 
         {/* Hero: the actual data a returning user came for. */}
@@ -173,23 +205,23 @@ function LibraryScreen({ stats }) {
               return (
                 <div key={lib.id} className="sg-lib-row">
                   <div style={{ flex:1 }}>
-                    <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:20, color:'var(--c-text)', marginBottom:2 }}>{lib.display_name}</div>
+                    <div style={{ fontWeight:600, fontSize:15, color:'var(--c-text)', marginBottom:2 }}>{lib.display_name}</div>
                     <div style={{ fontSize:10, color:'var(--c-mute)', marginBottom:8, wordBreak:'break-all' }}>{lib.root_path}</div>
                     <div style={{ display:'flex', gap:18, fontSize:11, color:'var(--c-text2)' }}>
-                      <span><b style={{ fontFamily:'var(--font-display)', fontStyle:'italic', color:'var(--c-text)' }}>{lib.image_count}</b> frames</span>
+                      <span><b style={{ color:'var(--c-text)', fontVariantNumeric:'tabular-nums' }}>{lib.image_count}</b> frames</span>
                       <span style={{ color:'var(--c-keeper)' }}><b>{v.keeper||0}</b> keep</span>
                       <span style={{ color:'var(--c-amber)' }}><b>{v.review||0}</b> review</span>
                       <span style={{ color:'var(--c-danger)' }}><b>{v.reject||0}</b> reject</span>
                     </div>
                     <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
                       {Object.keys(lib.models_run || {}).map(m => (
-                        <span key={m} style={{ fontSize:8, letterSpacing:'0.2em', textTransform:'uppercase', padding:'3px 8px', border:'1px solid var(--c-keeper)', color:'var(--c-keeper)', borderRadius:'var(--radius)' }}>{m} ✓</span>
+                        <span key={m} style={{ fontSize:10, letterSpacing: '0.12em', textTransform:'uppercase', padding:'3px 8px', border:'1px solid var(--c-keeper)', color:'var(--c-keeper)', borderRadius:'var(--radius)' }}>{m} ✓</span>
                       ))}
                     </div>
                   </div>
                   <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                    <Btn variant="ghost"  style={{ fontSize:9, padding:'6px 12px' }} onClick={() => syncLib(lib.id)}>Sync</Btn>
-                    <Btn variant="danger" style={{ fontSize:9, padding:'6px 12px' }} onClick={() => removeLib(lib.id, lib.display_name)}>Remove</Btn>
+                    <Btn variant="ghost"  style={{ fontSize:10, padding:'6px 12px' }} onClick={() => syncLib(lib.id)}>Sync</Btn>
+                    <Btn variant="danger" style={{ fontSize:10, padding:'6px 12px' }} onClick={() => setConfirmRemove({ id: lib.id, name: lib.display_name || lib.root_path })}>Remove</Btn>
                   </div>
                 </div>
               );
@@ -252,7 +284,7 @@ function LibraryScreen({ stats }) {
                 <span>{info.label}</span>
                 <span style={{ fontSize:10, color:'var(--c-mute)' }}>— {info.note}</span>
                 {!info.download && (
-                  <span style={{ fontSize:8, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-keeper)', marginLeft:'auto', padding:'2px 6px', border:'1px solid var(--c-keeper)', borderRadius:'var(--radius)' }}>built-in</span>
+                  <span style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-keeper)', marginLeft:'auto', padding:'2px 6px', border:'1px solid var(--c-keeper)', borderRadius:'var(--radius)' }}>built-in</span>
                 )}
               </label>
             ))}
@@ -273,6 +305,15 @@ function LibraryScreen({ stats }) {
           {msg && <div className="sg-toast">{msg}</div>}
         </div>
       </div>
+      <ConfirmModal
+        open={!!confirmRemove}
+        title="Remove library?"
+        danger
+        confirmLabel="Remove"
+        onConfirm={() => removeLib(confirmRemove.id)}
+        onCancel={() => setConfirmRemove(null)}
+        body={confirmRemove && <>Remove <b style={{ color:'var(--c-text)' }}>{confirmRemove.name}</b> from the catalogue? The analysis records are dropped, but the photos on disk stay put.</>}
+      />
     </div>
   );
 }
@@ -325,8 +366,8 @@ function BurstsScreen() {
     try {
       const r = await window.SG_API.regroup({ hamming: 10, seconds: 3 });
       setGroupMsg(`grouped → ${r.bursts ?? 0} bursts`);
-      await window.SG_API.refresh();
-      setTimeout(() => location.reload(), 500);
+      // Refetch + remount in place (keeps scroll / active library) instead of reloading.
+      await window.SG_REFRESH?.();
     } catch (e) { setGroupMsg(`regroup failed: ${e.message}`); }
     finally { setGrouping(false); }
   }
@@ -374,7 +415,7 @@ function BurstsScreen() {
     <div style={{ display:'flex', flex:1, minHeight:0, overflow:'hidden', flexDirection:'column' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
       <div style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0 }}>
-        <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
+        <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)' }}>
           Bursts grouped by pHash hamming · time window
         </span>
         <div style={{ flex:1 }} />
@@ -400,10 +441,10 @@ function BurstsScreen() {
           {burst && burstImages.length > 0 ? (
             <>
               <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:20, flexWrap:'wrap' }}>
-                <h2 style={{ fontFamily:'var(--font-display)', fontSize:32, fontWeight:400, letterSpacing:'-0.01em', margin:0 }}>
-                  Burst <em style={{ color:'var(--c-accent)' }}>#{burst.burst_id}</em>
+                <h2 style={{ fontSize:20, fontWeight:600, letterSpacing:'-0.01em', margin:0 }}>
+                  Burst <em style={{ color:'var(--c-accent)', fontStyle:'normal' }}>#{burst.burst_id}</em>
                 </h2>
-                <span style={{ fontSize:10, letterSpacing:'0.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
+                <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)' }}>
                   {burstImages.length} frames · compare &amp; pick sharpest
                 </span>
                 <div style={{ flex:1 }} />
@@ -414,7 +455,7 @@ function BurstsScreen() {
                     <Chip key={m} on={compareMode===m} onClick={() => setCompareMode(m)}>{l}</Chip>
                   ))}
                   {isCompare && (
-                    <span style={{ fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', fontVariantNumeric:'tabular-nums' }}>
+                    <span style={{ fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', fontVariantNumeric:'tabular-nums' }}>
                       {Math.round(cmpScale*100)}% · wheel zoom
                     </span>
                   )}
@@ -427,7 +468,7 @@ function BurstsScreen() {
                   return (
                     <div key={img.id} style={{ outline: isBest ? '2px solid var(--c-accent)' : '1px solid var(--c-border)', outlineOffset:-1, borderRadius:'var(--radius)', overflow:'hidden', background:'var(--c-panel)', position:'relative' }}>
                       {isBest && (
-                        <div style={{ position:'absolute', top:10, left:10, background:'var(--c-accent)', color:'var(--c-bg)', fontSize:8, letterSpacing:'0.22em', textTransform:'uppercase', padding:'3px 8px', zIndex:3 }}>Best pick</div>
+                        <div style={{ position:'absolute', top:10, left:10, background:'var(--c-accent)', color:'var(--c-bg)', fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', padding:'3px 8px', zIndex:3 }}>Best pick</div>
                       )}
                       <div
                         onWheel={cmpWheel} onMouseDown={cmpDown} onMouseMove={cmpMove}
@@ -446,10 +487,10 @@ function BurstsScreen() {
                       <div style={{ padding:'12px 14px' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
                           <span style={{ fontFamily:'var(--font-ui)', color:'var(--c-accent)', fontSize:12, fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(img.id,4)}</span>
-                          <span style={{ fontSize:9, letterSpacing:'0.2em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</span>
+                          <span style={{ fontSize:10, letterSpacing: '0.12em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</span>
                         </div>
                         <div style={{ marginBottom:10 }}>
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:4 }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:4 }}>
                             <span>Sharpness</span>
                             <span style={{ color: img.sharpness > 0.55 ? 'var(--c-keeper)' : img.sharpness > 0.3 ? 'var(--c-amber)' : 'var(--c-danger)' }}>{Math.round(img.sharpness * 100)}%</span>
                           </div>
@@ -460,7 +501,7 @@ function BurstsScreen() {
                         {/* Aesthetic score (new) */}
                         {img.aesthetic_score != null && (
                           <div style={{ marginBottom:10 }}>
-                            <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:4 }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:4 }}>
                               <span>Aesthetic</span>
                               <span style={{ color:'var(--c-text2)' }}>{Math.round(img.aesthetic_score * 100)}%</span>
                             </div>
@@ -472,7 +513,7 @@ function BurstsScreen() {
                         <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'var(--c-mute)', marginBottom:10 }}>
                           <span>f/{img.f_number}</span><span>{img.exposure_time}</span><span>ISO {img.iso}</span>
                         </div>
-                        <button onClick={() => pickBest(burst.burst_id, img)} style={{ width:'100%', padding:'8px', fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', border:`1px solid ${isBest ? 'var(--c-accent)' : 'var(--c-border2)'}`, color: isBest ? 'var(--c-accent)' : 'var(--c-mute)', background: isBest ? 'rgba(193,68,14,0.08)' : 'transparent', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
+                        <button onClick={() => pickBest(burst.burst_id, img)} style={{ width:'100%', padding:'8px', fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', border:`1px solid ${isBest ? 'var(--c-accent)' : 'var(--c-border2)'}`, color: isBest ? 'var(--c-accent)' : 'var(--c-mute)', background: isBest ? 'rgba(193,68,14,0.08)' : 'transparent', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
                           {isBest ? '✓ Picked' : 'Pick this'}
                         </button>
                       </div>
@@ -482,7 +523,7 @@ function BurstsScreen() {
               </div>
             </>
           ) : (
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'var(--c-mute)', fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:24 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'var(--c-mute)', fontSize:14 }}>
               {visibleBursts.length === 0 ? 'No bursts in this folder' : 'Select a burst to compare'}
             </div>
           )}
@@ -505,14 +546,14 @@ function ClusterName({ cluster, onRename, big }) {
       onClick={e => e.stopPropagation()}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setVal(cluster.label); setEditing(false); } }}
       onBlur={commit}
-      style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize: big ? 26 : 18,
+      style={{ fontWeight:600, fontSize: big ? 19 : 14,
                color:'var(--c-text)', background:'var(--c-bg)', border:'1px solid var(--c-accent)',
                borderRadius:'var(--radius)', padding:'2px 8px', width:'100%', boxSizing:'border-box' }} />
   );
   return (
     <span onClick={e => { e.stopPropagation(); setEditing(true); }}
       title="Click to rename"
-      style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize: big ? 28 : 18,
+      style={{ fontWeight:600, fontSize: big ? 19 : 14,
                color: cluster.named ? 'var(--c-text)' : 'var(--c-text2)', cursor:'text',
                borderBottom: '1px dashed transparent' }}
       onMouseOver={e => e.currentTarget.style.borderBottomColor = 'var(--c-border2)'}
@@ -535,12 +576,9 @@ function FacesScreen() {
   const [mergeSel, setMergeSel]   = useState(null);  // {id,label} target awaiting a source
   const [preview, setPreview]     = useState(null);  // {faces,clusters} at the slider's threshold
   const [curateMsg, setCurateMsg] = useState('');
-  const [rotateTick, setRotateTick] = useState(0);   // drives diverse-thumbnail rotation
+  const [confirmRecluster, setConfirmRecluster] = useState(false);
   const runThreshold = useRef(threshold);            // threshold the current clusters were built at
   useEffect(() => { setExpanded(null); setMergeSel(null); }, [activeLib]);
-
-  // Rotate card thumbnails so a 200-photo person's card feels alive.
-  useEffect(() => { const id = setInterval(() => setRotateTick(t => t + 1), 3500); return () => clearInterval(id); }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -605,8 +643,10 @@ function FacesScreen() {
     return () => { alive = false; clearInterval(id); };
   }, [running, reload]);
 
+  const namedCount = useMemo(() => clusters.filter(c => c.named).length, [clusters]);
+
   async function runClustering() {
-    if (!confirm('Reclustering rebuilds all groups from scratch — cluster names, merges, and manual fixes are tied to the current grouping and will be lost. Continue?')) return;
+    setConfirmRecluster(false);
     setRunMsg(''); setRunning(true); setPreview(null);
     runThreshold.current = threshold;
     try {
@@ -635,11 +675,11 @@ function FacesScreen() {
     <div style={{ display:'flex', flex:1, minHeight:0, flexDirection:'column', overflow:'hidden' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={setActiveLib} counts={libCounts} />
       <div style={{ display:'flex', gap:14, alignItems:'center', padding:'8px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', flexShrink:0, flexWrap:'wrap' }}>
-        <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>
+        <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)' }}>
           {clusters.length} cluster{clusters.length === 1 ? '' : 's'} · InsightFace + greedy/HNSW
         </span>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>Sort</span>
+          <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)' }}>Sort</span>
           <button
             onClick={() => setSortMode(s => s === 'size_desc' ? 'size_asc' : 'size_desc')}
             style={{ fontSize:10, letterSpacing:'.18em', textTransform:'uppercase', padding:'4px 10px', border:'1px solid var(--c-border)', background:'var(--c-panel)', color:'var(--c-text)', cursor:'pointer', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}
@@ -649,7 +689,7 @@ function FacesScreen() {
           </button>
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:9, letterSpacing:'.22em', textTransform:'uppercase', color:'var(--c-mute)' }}>Threshold</span>
+          <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)' }}>Threshold</span>
           <input type="range" min={0.15} max={0.55} step={0.01} value={threshold}
             onChange={e => setThreshold(parseFloat(e.target.value))}
             disabled={running}
@@ -657,7 +697,7 @@ function FacesScreen() {
             title="Cosine similarity threshold for clustering (lower = lumpier)" />
           <span style={{ fontFamily:'var(--font-ui)', fontSize:14, color:'var(--c-accent)', minWidth:36, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{threshold.toFixed(2)}</span>
           {preview && (
-            <span style={{ fontSize:9, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-text2)', fontVariantNumeric:'tabular-nums' }}>
+            <span style={{ fontSize:10, letterSpacing:'.16em', textTransform:'uppercase', color:'var(--c-text2)', fontVariantNumeric:'tabular-nums' }}>
               ≈{preview.clusters} clusters
             </span>
           )}
@@ -665,10 +705,26 @@ function FacesScreen() {
         <div style={{ flex:1 }} />
         {curateMsg && <span className="sg-toast" style={{ marginTop:0, color:'var(--c-danger)' }}>{curateMsg}</span>}
         {runMsg && <span className="sg-toast" style={{ marginTop:0 }}>{runMsg}</span>}
-        <Btn variant="primary" disabled={running} onClick={runClustering}>
+        <Btn variant="primary" disabled={running} onClick={() => setConfirmRecluster(true)}>
           {running ? 'Clustering…' : 'Recluster'}
         </Btn>
       </div>
+      <ConfirmModal
+        open={confirmRecluster}
+        title="Recluster all faces?"
+        danger
+        confirmLabel="Recluster"
+        onConfirm={runClustering}
+        onCancel={() => setConfirmRecluster(false)}
+        body={
+          <>
+            Reclustering rebuilds every group from scratch at the new threshold.
+            {namedCount > 0
+              ? <> Your <b style={{ color:'var(--c-text)' }}>{namedCount} named cluster{namedCount === 1 ? '' : 's'}</b> are re-anchored to the closest matching new group by face similarity, so names usually carry over — but a name is dropped if that person no longer forms a confident cluster. Manual merges/removals are not preserved.</>
+              : <> No clusters are named yet, so nothing labelled is at risk.</>}
+          </>
+        }
+      />
       <div className="sg-scroll">
         <div className="sg-page">
           <p className="sg-lede">Faces grouped by similarity across the library. Identify recurring subjects and curate by person.</p>
@@ -681,7 +737,7 @@ function FacesScreen() {
                     Merging into <b style={{ color:'var(--c-accent)' }}>{mergeSel.label}</b> — pick the cluster to fold in.
                   </span>
                   <button onClick={() => setMergeSel(null)}
-                    style={{ fontSize:9, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-danger)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>cancel ×</button>
+                    style={{ fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:'var(--c-danger)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>cancel ×</button>
                 </div>
               )}
               {loading ? (
@@ -692,8 +748,10 @@ function FacesScreen() {
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:16, marginBottom:32 }}>
                   {visibleClusters.map(c => {
                     const pool = c.thumbs || [];
-                    const start = pool.length > 4 ? (rotateTick % pool.length) : 0;
-                    const shown = pool.length ? [0,1,2,3].map(i => pool[(start + i) % pool.length]) : [];
+                    // Static 2×2 collage of the cluster's representative faces — a
+                    // glanceable identity card (the prior 3.5s rotation fought
+                    // side-by-side comparison).
+                    const shown = pool.slice(0, 4);
                     const isMergeTarget = mergeSel && mergeSel.id === c.id;
                     return (
                     <div key={c.id} onClick={() => { if (mergeSel && mergeSel.id !== c.id) doMerge(mergeSel.id, c.id); else setExpanded(c.id); }}
@@ -716,7 +774,7 @@ function FacesScreen() {
                         <div style={{ fontSize:10, color:'var(--c-mute)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                           <span style={{ fontVariantNumeric:'tabular-nums' }}>{c.count} appearances</span>
                           <button onClick={e => { e.stopPropagation(); setMergeSel(mergeSel && mergeSel.id === c.id ? null : { id: c.id, label: c.label }); }}
-                            style={{ fontSize:9, letterSpacing:'0.14em', textTransform:'uppercase', color: isMergeTarget ? 'var(--c-accent)' : 'var(--c-mute)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>
+                            style={{ fontSize:10, letterSpacing:'0.14em', textTransform:'uppercase', color: isMergeTarget ? 'var(--c-accent)' : 'var(--c-mute)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-ui)' }}>
                             {isMergeTarget ? 'target ✓' : '⇆ merge'}
                           </button>
                         </div>
@@ -728,7 +786,7 @@ function FacesScreen() {
             </>
           ) : (
             <>
-              <button onClick={() => setExpanded(null)} style={{ fontSize:10, letterSpacing:'0.2em', textTransform:'uppercase', color:'var(--c-mute)', background:'none', border:'none', cursor:'pointer', marginBottom:20, display:'flex', alignItems:'center', gap:8, fontFamily:'var(--font-ui)' }}>‹ Back to clusters</button>
+              <button onClick={() => setExpanded(null)} style={{ fontSize:10, letterSpacing: '0.12em', textTransform:'uppercase', color:'var(--c-mute)', background:'none', border:'none', cursor:'pointer', marginBottom:20, display:'flex', alignItems:'center', gap:8, fontFamily:'var(--font-ui)' }}>‹ Back to clusters</button>
               <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:24 }}>
                 <img src={cluster.rep_thumb} alt="" style={{ width:60, height:60, objectFit:'cover', borderRadius:'50%', border:'2px solid var(--c-border2)' }} />
                 <div>
@@ -745,7 +803,7 @@ function FacesScreen() {
                       style={{ position:'absolute', top:6, right:6, zIndex:2, width:22, height:22, borderRadius:'50%',
                                background:'rgba(10,9,7,0.75)', color:'var(--c-danger)', border:'1px solid var(--c-danger)',
                                cursor:'pointer', fontSize:12, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
-                    <div style={{ padding:'8px 10px', fontSize:9, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', display:'flex', justifyContent:'space-between' }}>
+                    <div style={{ padding:'8px 10px', fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', display:'flex', justifyContent:'space-between' }}>
                       <span style={{ fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums' }}>№{pad(t.id,4)}</span>
                       <a href={`/api/images/${t.image_id}/preview`} target="_blank" rel="noreferrer"
                          onClick={e => e.stopPropagation()} style={{ color:'var(--c-accent)' }}>open ↗</a>
@@ -807,12 +865,10 @@ function XMPExportScreen() {
     <div style={{ display:'flex', flex:1, minHeight:0, flexDirection:'column', overflow:'hidden' }}>
       <LibraryFilterBar activeLib={activeLib} setActiveLib={id => { setActiveLib(id); setDone(new Set()); }} counts={libCounts} />
       <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--c-border)', background:'var(--c-bg)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', flexShrink:0 }}>
-        <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:17, color:'var(--c-text)', marginRight:6 }}>Write XMP sidecars</span>
-        {['all','keeper','review','reject'].map(f => (
-          <Chip key={f} on={verdictFilter === f} onClick={() => setVerdictFilter(f)}>{f}</Chip>
-        ))}
+        <span style={{ fontWeight:600, fontSize:13, color:'var(--c-text)', marginRight:6 }}>Write XMP sidecars</span>
+        <VerdictChips value={verdictFilter} onChange={setVerdictFilter} />
         <div style={{ flex:1 }} />
-        <label style={{ fontSize:9, color:'var(--c-text2)', cursor:'pointer', display:'flex', alignItems:'center', gap:8, letterSpacing:'0.16em', textTransform:'uppercase', fontFamily:'var(--font-ui)' }}>
+        <label style={{ fontSize:10, color:'var(--c-text2)', cursor:'pointer', display:'flex', alignItems:'center', gap:8, letterSpacing:'0.16em', textTransform:'uppercase', fontFamily:'var(--font-ui)' }}>
           <input type="checkbox" checked={allChecked} onChange={toggleAll} style={{ accentColor:'var(--c-accent)' }} />
           Select all ({filtered.length})
         </label>
@@ -822,7 +878,7 @@ function XMPExportScreen() {
       </div>
       {progress && (
         <div style={{ padding:'7px 20px', background:'var(--c-panel)', borderBottom:'1px solid var(--c-border)', flexShrink:0 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-text2)', marginBottom:5 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-text2)', marginBottom:5 }}>
             <span>Writing XMP sidecars…</span><span>{progress.done} / {progress.total}</span>
           </div>
           <div style={{ height:3, background:'var(--c-border)', borderRadius:2 }}>
@@ -838,7 +894,7 @@ function XMPExportScreen() {
             <thead>
               <tr style={{ borderBottom:'1px solid var(--c-border)', background:'var(--c-panel2)', position:'sticky', top:0, zIndex:1 }}>
                 {['', 'Frame', 'Folder', 'Verdict', 'Stars', 'Type', 'Reasons', 'Camera', 'Status'].map(h => (
-                  <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontSize:8, letterSpacing:'0.26em', textTransform:'uppercase', color:'var(--c-mute)', fontWeight:400, fontFamily:'var(--font-ui)', whiteSpace:'nowrap' }}>{h}</th>
+                  <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)', fontWeight:400, fontFamily:'var(--font-ui)', whiteSpace:'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -857,16 +913,16 @@ function XMPExportScreen() {
                     <td style={{ padding:'9px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                         <img src={img.thumb} alt="" style={{ width:40, height:28, objectFit:'cover', borderRadius:'var(--radius)', flexShrink:0 }} />
-                        <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', color:'var(--c-accent)', fontSize:14 }}>№{pad(img.id,4)}</span>
+                        <span style={{ fontFamily:'var(--font-ui)', color:'var(--c-accent)', fontSize:12, fontVariantNumeric:'tabular-nums' }}>№{pad(img.id,4)}</span>
                       </div>
                     </td>
                     <td style={{ padding:'9px 12px', fontSize:10, color:'var(--c-mute)', whiteSpace:'nowrap', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis' }}>{lib ? (lib.display_name || lib.root_path.split('/').pop()) : '—'}</td>
-                    <td style={{ padding:'9px 12px', fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</td>
+                    <td style={{ padding:'9px 12px', fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</td>
                     <td style={{ padding:'9px 12px', color:'var(--c-amber)', fontSize:12, letterSpacing:'-1px' }}>{'★'.repeat(img.stars||0)}</td>
                     {/* Content type column (new) */}
-                    <td style={{ padding:'9px 12px', fontSize:9 }}>
+                    <td style={{ padding:'9px 12px', fontSize:10 }}>
                       {img.content_type && img.content_type !== 'photo' ? (
-                        <span style={{ padding:'2px 6px', fontSize:8, letterSpacing:'0.16em', textTransform:'uppercase', background: img.content_type === 'screenshot' ? 'var(--c-amber)' : 'var(--c-accent)', color:'var(--c-bg)', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
+                        <span style={{ padding:'2px 6px', fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', background: img.content_type === 'screenshot' ? 'var(--c-amber)' : 'var(--c-accent)', color:'var(--c-bg)', borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>
                           {img.content_type === 'screenshot' ? '🖥' : '📄'} {img.content_type}
                         </span>
                       ) : (
@@ -875,7 +931,7 @@ function XMPExportScreen() {
                     </td>
                     <td style={{ padding:'9px 12px', fontSize:10, color:'var(--c-mute)', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{(img.reasons||[]).join(', ') || '—'}</td>
                     <td style={{ padding:'9px 12px', fontSize:10, color:'var(--c-text2)', whiteSpace:'nowrap' }}>{img.camera_model}</td>
-                    <td style={{ padding:'9px 12px', fontSize:9, letterSpacing:'0.18em', color: isDone ? 'var(--c-keeper)' : 'var(--c-mute)', whiteSpace:'nowrap' }}>{isDone ? '✓ written' : '—'}</td>
+                    <td style={{ padding:'9px 12px', fontSize:10, letterSpacing:'0.18em', color: isDone ? 'var(--c-keeper)' : 'var(--c-mute)', whiteSpace:'nowrap' }}>{isDone ? '✓ written' : '—'}</td>
                   </tr>
                 );
               })}
@@ -981,7 +1037,7 @@ function OrganizeScreen() {
           <div className="sg-card-sub">Each level becomes a directory · order matters · 23 tokens available</div>
           {levels.map((lv, i) => (
             <div key={i} style={{ display:'grid', gridTemplateColumns:'36px 1fr 36px', gap:10, alignItems:'center', marginBottom:10 }}>
-              <span style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:20, color:'var(--c-accent)', textAlign:'center' }}>{i+1}.</span>
+              <span style={{ fontFamily:'var(--font-ui)', fontSize:14, fontWeight:600, color:'var(--c-accent)', textAlign:'center', fontVariantNumeric:'tabular-nums' }}>{i+1}.</span>
               <select className="sg-select" value={lv} onChange={e => { const n=[...levels]; n[i]=e.target.value; setLevels(n); }}>
                 {TOKEN_GROUPS.map(g => (
                   <optgroup key={g.label} label={g.label}>
@@ -992,15 +1048,15 @@ function OrganizeScreen() {
               <button onClick={() => setLevels(levels.filter((_,j)=>j!==i))} style={{ color:'var(--c-danger)', background:'none', border:'none', cursor:'pointer', fontSize:16 }}>✕</button>
             </div>
           ))}
-          <button onClick={() => setLevels([...levels, ORGANIZE_TOKENS[0]])} style={{ fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', color:'var(--c-text2)', background:'none', border:'1px dashed var(--c-border2)', padding:'7px 14px', cursor:'pointer', marginTop:4, borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>+ add level</button>
+          <button onClick={() => setLevels([...levels, ORGANIZE_TOKENS[0]])} style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-text2)', background:'none', border:'1px dashed var(--c-border2)', padding:'7px 14px', cursor:'pointer', marginTop:4, borderRadius:'var(--radius)', fontFamily:'var(--font-ui)' }}>+ add level</button>
 
           {/* Token reference card */}
           <div style={{ marginTop:20, padding:'14px 16px', border:'1px dashed var(--c-border2)', borderRadius:'var(--radius)', background:'var(--c-bg)' }}>
-            <div style={{ fontSize:8, letterSpacing:'0.28em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:12 }}>Token reference</div>
+            <div style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:12 }}>Token reference</div>
             <div style={{ display:'flex', flexWrap:'wrap', gap:16 }}>
               {TOKEN_GROUPS.map(g => (
                 <div key={g.label}>
-                  <div style={{ fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', color:'var(--c-accent)', marginBottom:6 }}>{g.label}</div>
+                  <div style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-accent)', marginBottom:6 }}>{g.label}</div>
                   {g.tokens.map(t => (
                     <div key={t} style={{ fontSize:10, color:'var(--c-text2)', marginBottom:3, fontFamily:'var(--font-ui)', display:'flex', gap:8 }}>
                       <code style={{ color:'var(--c-text)', minWidth:160, display:'inline-block' }}>{t}</code>
@@ -1031,7 +1087,7 @@ function OrganizeScreen() {
           {status && <div className="sg-toast">{status}</div>}
           {preview && preview.length > 0 && (
             <div style={{ border:'1px solid var(--c-border)', background:'var(--c-panel2)', padding:16, borderRadius:'var(--radius)', marginTop:14 }}>
-              <div style={{ fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:10 }}>
+              <div style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase', color:'var(--c-mute)', marginBottom:10 }}>
                 First {preview.length} entries
               </div>
               <pre style={{ margin:0, fontSize:11, color:'var(--c-text2)', lineHeight:1.7, wordBreak:'break-all', whiteSpace:'pre-wrap', maxHeight:340, overflow:'auto' }}>
@@ -1086,13 +1142,13 @@ function SettingsScreen() {
             <div key={s.key} style={{ display:'grid', gridTemplateColumns:'1fr auto 56px', gap:16, alignItems:'center', padding:'12px 0', borderBottom:'1px dashed var(--c-border)' }}>
               <div>
                 <div style={{ fontSize:12, color:'var(--c-text)' }}>{s.label}</div>
-                {s.note && <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>{s.note}</div>}
+                {s.note && <div style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>{s.note}</div>}
               </div>
               <input type="range" min={s.min} max={s.max} step={s.step} value={t[s.key]}
                 onChange={e => setT({...t, [s.key]: parseFloat(e.target.value)})}
                 style={{ width:180, accentColor:'var(--c-accent)' }}
               />
-              <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22, color:'var(--c-accent)', textAlign:'right' }}>{t[s.key]}</div>
+              <div style={{ fontFamily:'var(--font-ui)', fontSize:18, fontWeight:500, fontVariantNumeric:'tabular-nums', color:'var(--c-accent)', textAlign:'right' }}>{t[s.key]}</div>
             </div>
           ))}
         </div>
@@ -1106,7 +1162,7 @@ function SettingsScreen() {
               <input type="checkbox" checked={t[tog.key]} onChange={e => setT({...t, [tog.key]: e.target.checked})} style={{ width:18, height:18, accentColor:'var(--c-accent)', flexShrink:0 }} />
               <div>
                 <div style={{ fontSize:12, color:'var(--c-text)' }}>{tog.label}</div>
-                <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:2 }}>{tog.note}</div>
+                <div style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:2 }}>{tog.note}</div>
               </div>
             </div>
           ))}
@@ -1183,27 +1239,27 @@ function FaceClusterSettings() {
       <div style={{ display:'grid', gridTemplateColumns:'1fr auto 70px', gap:16, alignItems:'center', padding:'12px 0', borderBottom:'1px dashed var(--c-border)' }}>
         <div>
           <div style={{ fontSize:12, color:'var(--c-text)' }}>Minimum cluster size</div>
-          <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
+          <div style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
             Hide clusters with fewer than N member images
           </div>
         </div>
         <input type="range" min={1} max={20} step={1} value={minSize}
           onChange={e => setMinSize(parseInt(e.target.value, 10))}
           style={{ width:180, accentColor:'var(--c-accent)' }} />
-        <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22, color:'var(--c-accent)', textAlign:'right' }}>{minSize}</div>
+        <div style={{ fontFamily:'var(--font-ui)', fontSize:18, fontWeight:500, fontVariantNumeric:'tabular-nums', color:'var(--c-accent)', textAlign:'right' }}>{minSize}</div>
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr auto 70px', gap:16, alignItems:'center', padding:'12px 0', borderBottom:'1px dashed var(--c-border)' }}>
         <div>
           <div style={{ fontSize:12, color:'var(--c-text)' }}>Similarity threshold</div>
-          <div style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
+          <div style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', marginTop:3 }}>
             Cosine sim ≥ this → same person · lower = lumpier · default 0.30 (InsightFace buffalo_s)
           </div>
         </div>
         <input type="range" min={0.15} max={0.55} step={0.01} value={threshold}
           onChange={e => setThreshold(parseFloat(e.target.value))}
           style={{ width:180, accentColor:'var(--c-accent)' }} />
-        <div style={{ fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:22, color:'var(--c-accent)', textAlign:'right' }}>{threshold.toFixed(2)}</div>
+        <div style={{ fontFamily:'var(--font-ui)', fontSize:18, fontWeight:500, fontVariantNumeric:'tabular-nums', color:'var(--c-accent)', textAlign:'right' }}>{threshold.toFixed(2)}</div>
       </div>
 
       <div style={{ display:'flex', alignItems:'center', gap:14, marginTop:14 }}>

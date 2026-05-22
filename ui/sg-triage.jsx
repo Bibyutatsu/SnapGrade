@@ -5,6 +5,9 @@
 
 const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
+// Max resident full-metrics blobs (subjects/eyes/objects/OCR) before LRU eviction.
+const METRICS_CACHE_CAP = 400;
+
 // ── Filter state ──────────────────────────────────────────────────────────────
 const DEFAULT_FILTERS = {
   verdict:       'all',   // all | keeper | review | reject
@@ -205,12 +208,12 @@ function FSection({ title, active, defaultOpen = true, children }) {
         onClick={() => setOpen(o => !o)}
         style={{ width:'100%', display:'flex', justifyContent:'space-between', alignItems:'center',
                  padding:'9px 16px', background:'none', border:'none', cursor:'pointer',
-                 fontSize:8, letterSpacing:'0.26em', textTransform:'uppercase',
+                 fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase',
                  color: active ? 'var(--c-accent)' : 'var(--c-mute)', fontFamily:'var(--font-ui)',
                  transition:'color .12s' }}
       >
         <span>{title}</span>
-        <span style={{ fontSize:9, color:'var(--c-mute)', transition:'transform .15s',
+        <span style={{ fontSize:10, color:'var(--c-mute)', transition:'transform .15s',
                        transform: open ? 'none' : 'rotate(-90deg)', display:'inline-block' }}>▾</span>
       </button>
       {open && <div style={{ padding:'2px 16px 14px' }}>{children}</div>}
@@ -347,7 +350,7 @@ function Histogram({ values, threshold, onChange, label, accent = 'var(--c-keepe
                       border:'2px solid var(--c-bg)', pointerEvents:'none' }}/>
       </div>
       <div style={{ display:'flex', justifyContent:'space-between',
-                    fontSize:8, letterSpacing:'0.2em', textTransform:'uppercase',
+                    fontSize:10, letterSpacing: '0.12em', textTransform:'uppercase',
                     color:'var(--c-mute)', marginTop:4, fontFamily:'var(--font-ui)' }}>
         <span>0%</span>
         <span style={{ color:'var(--c-text2)' }}>{passCount} of {values.length} pass</span>
@@ -532,7 +535,7 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange, compact = false 
           </div>
         </div>
         <div style={{ display:'flex', justifyContent:'space-between',
-                      fontSize:8, letterSpacing:'0.18em', textTransform:'uppercase',
+                      fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase',
                       color:'var(--c-mute)', marginTop:4, fontFamily:'var(--font-ui)' }}>
           <span style={{ color: dateFrom ? 'var(--c-accent)' : 'var(--c-mute)' }}>◀ {fmt(fromT)}</span>
           <span style={{ color:'var(--c-text2)' }}>{dated.length} dated frames</span>
@@ -542,7 +545,7 @@ function TimelineScrubber({ images, dateFrom, dateTo, onChange, compact = false 
 
       {!compact && filterActive && (
         <button onClick={() => onChange({ from: '', to: '' })}
-          style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase',
+          style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase',
                    color:'var(--c-danger)', background:'none', border:'none',
                    cursor:'pointer', fontFamily:'var(--font-ui)', flexShrink:0 }}>
           reset ×
@@ -620,7 +623,7 @@ function HuePicker({ anchors, tolerance, minSat, onChange }) {
             </button>
           ))}
           <button onClick={() => onChange({ anchors: [] })}
-            style={{ fontSize:9, color:'var(--c-danger)', background:'none',
+            style={{ fontSize:10, color:'var(--c-danger)', background:'none',
                      border:'none', cursor:'pointer', letterSpacing:'0.14em',
                      textTransform:'uppercase', fontFamily:'var(--font-ui)' }}>
             clear all
@@ -697,11 +700,11 @@ function FilterPanel({ filters: f, setFilters, images, onClose, onTimelineChange
       {/* Header */}
       <div style={{ padding:'11px 16px', borderBottom:'1px solid var(--c-border)',
                     display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
-        <span style={{ fontSize:9, letterSpacing:'0.28em', textTransform:'uppercase',
+        <span style={{ fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase',
                        color:'var(--c-text)', fontFamily:'var(--font-ui)' }}>Filters</span>
         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
           <button onClick={() => setFilters(DEFAULT_FILTERS)}
-            style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase',
+            style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase',
                      color:'var(--c-danger)', background:'none', border:'none',
                      cursor:'pointer', fontFamily:'var(--font-ui)' }}>
             Clear all
@@ -862,14 +865,14 @@ function FilterPanel({ filters: f, setFilters, images, onClose, onTimelineChange
           <FLabel>ISO</FLabel>
           <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:2 }}>
             {[['all','All'],['low','≤200'],['mid','201–1600'],['high','1601–6400'],['extreme','>6400']].map(([v,l]) => (
-              <FChip key={v} on={f.iso === v} onClick={() => upd('iso', v)} style={{ fontSize:9 }}>{l}</FChip>
+              <FChip key={v} on={f.iso === v} onClick={() => upd('iso', v)} style={{ fontSize:10 }}>{l}</FChip>
             ))}
           </div>
 
           <FLabel>Aperture</FLabel>
           <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:2 }}>
             {[['all','All'],['wide','Wide <f/2.8'],['mid','f/2.8–5.6'],['narrow','Narrow >f/5.6']].map(([v,l]) => (
-              <FChip key={v} on={f.aperture === v} onClick={() => upd('aperture', v)} style={{ fontSize:9 }}>{l}</FChip>
+              <FChip key={v} on={f.aperture === v} onClick={() => upd('aperture', v)} style={{ fontSize:10 }}>{l}</FChip>
             ))}
           </div>
 
@@ -941,12 +944,13 @@ function VerdictMark({ verdict }) {
   return null;
 }
 
-function ThumbCard({ item, selected, idx, onClick, onDoubleClick }) {
+function ThumbCard({ item, selected, multiSelected, idx, onClick, onDoubleClick }) {
   return (
     <button onClick={onClick} onDoubleClick={onDoubleClick}
-      className={`sg-thumb ${selected ? 'sel' : ''}`}
-      style={{ animationDelay:`${Math.min(idx,30)*16}ms`, outline: selected ? '2px solid var(--c-accent)' : 'none', outlineOffset:-2 }}
+      className={`sg-thumb ${selected ? 'sel' : ''} ${multiSelected ? 'multisel' : ''}`}
+      style={{ animationDelay:`${Math.min(idx,30)*16}ms`, outline: (selected||multiSelected) ? '2px solid var(--c-accent)' : 'none', outlineOffset:-2 }}
     >
+      {multiSelected && <span style={{ position:'absolute', top:11, right:11, zIndex:3, width:18, height:18, borderRadius:'50%', background:'var(--c-accent)', color:'var(--c-bg)', fontSize:11, lineHeight:'18px', textAlign:'center', fontFamily:'var(--font-ui)' }}>✓</span>}
       {item.is_best && <span className="sg-thumb-best">Best</span>}
       <div style={{ position:'relative' }}>
         <img loading="lazy" src={item.thumb} alt=""
@@ -972,7 +976,7 @@ function ThumbCard({ item, selected, idx, onClick, onDoubleClick }) {
       </div>
       <div className="sg-thumb-strip">
         <span style={{ fontFamily:'var(--font-ui)', fontSize:11, color:'var(--c-accent)', fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(item.id,4)}</span>
-        <span style={{ letterSpacing:0, color:'var(--c-amber)', fontSize:11 }}>{'★'.repeat(item.stars||0)}{'·'.repeat(5-(item.stars||0))}</span>
+        <span style={{ letterSpacing:0, color:'var(--c-amber)', fontSize:11 }}>{item.verdict==='reject' ? '' : `${'★'.repeat(item.stars||0)}${'·'.repeat(5-(item.stars||0))}`}</span>
       </div>
       <div style={{ height:4, background: item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent' }} />
     </button>
@@ -1000,17 +1004,35 @@ function LibRail({ libraries, activeLib, setActiveLib }) {
 }
 
 // ── Grid layout ───────────────────────────────────────────────────────────────
-function GridLayout({ items, selectedId, onSelect, onDoubleClick }) {
+// Incremental windowing: render an initial slice and grow as the user nears the
+// bottom, so a 10k-image library doesn't mount 10k cards up front. Resets when
+// the filtered set size changes (i.e. filters changed), not on verdict edits.
+const GRID_STEP = 200;
+function GridLayout({ items, selectedId, multiSel, onSelect, onDoubleClick }) {
+  const [limit, setLimit] = useState(GRID_STEP);
+  const prevLen = useRef(items.length);
+  useEffect(() => {
+    if (prevLen.current !== items.length) { setLimit(GRID_STEP); prevLen.current = items.length; }
+  }, [items.length]);
+  const onScroll = e => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 700) {
+      setLimit(l => (l < items.length ? Math.min(items.length, l + GRID_STEP) : l));
+    }
+  };
+  const shown = items.slice(0, limit);
   return (
-    <div className="sg-grid sg-scroll">
-      {items.map((item,i)=>(
-        <ThumbCard key={item.id} item={item} idx={i} selected={selectedId===item.id}
-          onClick={()=>onSelect(item.id)} onDoubleClick={()=>onDoubleClick(item.id)} />
+    <div className="sg-grid sg-scroll" onScroll={onScroll}>
+      {shown.map((item,i)=>(
+        <ThumbCard key={item.id} item={item} idx={i}
+          selected={selectedId===item.id}
+          multiSelected={multiSel && multiSel.has(item.id)}
+          onClick={e=>onSelect(item.id, e)} onDoubleClick={()=>onDoubleClick(item.id)} />
       ))}
       {!items.length&&(
         <div style={{gridColumn:'1/-1',textAlign:'center',padding:'80px 20px',color:'var(--c-mute)'}}>
-          <div style={{fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:32,color:'var(--c-text2)'}}>The sheet is blank.</div>
-          <div style={{fontSize:9,letterSpacing:'0.22em',textTransform:'uppercase',marginTop:10,color:'var(--c-mute)'}}>No frames match these filters</div>
+          <div style={{fontSize:16,fontWeight:600,color:'var(--c-text2)'}}>No frames match.</div>
+          <div style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',marginTop:10,color:'var(--c-mute)'}}>Try clearing some filters</div>
         </div>
       )}
     </div>
@@ -1045,17 +1067,17 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
             showBoxes={showBoxes}
           />
         ) : (
-          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--c-mute)',fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:24}}>No frame</div>
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--c-mute)',fontSize:14}}>No frame</div>
         )}
         <button onClick={onPrev} style={{position:'absolute',left:0,top:0,bottom:0,width:64,background:'linear-gradient(to right,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}}
           onMouseOver={e=>e.currentTarget.style.color='rgba(255,255,255,0.9)'} onMouseOut={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}>‹</button>
         <button onClick={onNext} style={{position:'absolute',right:0,top:0,bottom:0,width:64,background:'linear-gradient(to left,rgba(0,0,0,.4),transparent)',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:36,display:'flex',alignItems:'center',justifyContent:'center',zIndex:2}}
           onMouseOver={e=>e.currentTarget.style.color='rgba(255,255,255,0.9)'} onMouseOut={e=>e.currentTarget.style.color='rgba(255,255,255,0.5)'}>›</button>
-        {selected&&<div style={{position:'absolute',top:12,left:16,background:'rgba(0,0,0,.6)',padding:'3px 10px',fontSize:10,letterSpacing:'0.2em',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',fontFamily:'var(--font-ui)',zIndex:2}}>
+        {selected&&<div style={{position:'absolute',top:12,left:16,background:'rgba(0,0,0,.6)',padding:'3px 10px',fontSize:10,letterSpacing: '0.12em',textTransform:'uppercase',color:'rgba(255,255,255,0.7)',fontFamily:'var(--font-ui)',zIndex:2}}>
           {items.findIndex(i=>i.id===selected.id)+1} / {items.length}</div>}
-        {selected&&<div style={{position:'absolute',top:12,right:80,padding:'3px 10px',fontSize:9,letterSpacing:'0.22em',textTransform:'uppercase',fontFamily:'var(--font-ui)',background:'rgba(0,0,0,0.6)',color:verdictColor(selected.verdict),zIndex:2}}>{selected.verdict||'—'}</div>}
+        {selected&&<div style={{position:'absolute',top:12,right:80,padding:'3px 10px',fontSize:10,letterSpacing: '0.1em',textTransform:'uppercase',fontFamily:'var(--font-ui)',background:'rgba(0,0,0,0.6)',color:verdictColor(selected.verdict),zIndex:2}}>{selected.verdict||'—'}</div>}
         {hasOverlays && (
-          <label style={{position:'absolute',bottom:12,left:16,display:'inline-flex',alignItems:'center',gap:6,padding:'4px 9px',background:'rgba(0,0,0,0.55)',fontSize:9,letterSpacing:'.18em',textTransform:'uppercase',color:'var(--c-text)',cursor:'pointer',zIndex:2,fontFamily:'var(--font-ui)'}}>
+          <label style={{position:'absolute',bottom:12,left:16,display:'inline-flex',alignItems:'center',gap:6,padding:'4px 9px',background:'rgba(0,0,0,0.55)',fontSize:10,letterSpacing:'.18em',textTransform:'uppercase',color:'var(--c-text)',cursor:'pointer',zIndex:2,fontFamily:'var(--font-ui)'}}>
             <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)} style={{accentColor:'var(--c-accent)'}} />
             overlays
           </label>
@@ -1085,6 +1107,15 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
   const [selectedId, setSelectedId] = useState(MOCK_IMAGES[0]?.id ?? null);
   const [images, setImages]       = useState(MOCK_IMAGES);
   const [lightbox, setLightbox]   = useState(false);
+  // Multi-select for bulk culling: a Set of ids. Empty ⇒ act on selectedId only.
+  const [multiSel, setMultiSel]   = useState(() => new Set());
+  // Optional search scope handed over from the Library screen's semantic search
+  // (read once, then cleared so it doesn't stick across remounts).
+  const [searchScope, setSearchScope] = useState(() => {
+    const s = window.SG_SEARCH; window.SG_SEARCH = null; return s || null;
+  });
+  const anchorRef = useRef(null);          // range-select anchor (last plain click)
+  const undoStack = useRef([]);            // [{entries:[{id,verdict,stars,label}], label}]
   // Transient verdict confirmation — in filmstrip layout the only on-screen
   // signal (the thumbnail border) is off-screen, so flash the word centrally.
   const [flash, setFlash]         = useState(null);
@@ -1111,8 +1142,16 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
     ? images.filter(i => i.library_id === activeLib) : images,
     [images, activeLib]);
 
-  // Apply all filters + library scope
-  const filtered = useMemo(() => applyFilters(libScoped, filters), [libScoped, filters]);
+  // When a search scope is active, restrict to those ids (across all libraries)
+  // before the normal filters run, so the user can further cull within results.
+  const scoped = useMemo(() => {
+    if (!searchScope) return libScoped;
+    const set = new Set(searchScope.ids);
+    return images.filter(i => set.has(i.id));
+  }, [images, libScoped, searchScope]);
+
+  // Apply all filters + library/search scope
+  const filtered = useMemo(() => applyFilters(scoped, filters), [scoped, filters]);
 
   const selectedImage = images.find(i => i.id === selectedId) || null;
   const filteredIdx   = filtered.findIndex(i => i.id === selectedId);
@@ -1120,6 +1159,10 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
   // Lazy-fetch the full metrics blob (subjects, eyes, objects, …) for the
   // currently-selected image, so DetailPanel / Lightbox can draw bboxes and
   // the long-form tag row. Skipped if we already have it.
+  // LRU bound on resident full-metrics blobs: paging through a huge library
+  // sequentially otherwise accumulates every metrics blob in memory. We keep at
+  // most METRICS_CACHE_CAP and evict the oldest (never the current selection).
+  const metricsLru = useRef([]);
   useEffect(() => {
     if (!selectedId) return;
     const img = images.find(i => i.id === selectedId);
@@ -1128,7 +1171,22 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
     window.SG_API.loadImageMetrics(selectedId)
       .then(full => {
         if (!alive || !full) return;
-        setImages(imgs => imgs.map(it => it.id !== selectedId ? it : { ...it, metrics: full.metrics || {} }));
+        const evictId = (() => {
+          const q = metricsLru.current;
+          const at = q.indexOf(selectedId);
+          if (at >= 0) q.splice(at, 1);
+          q.push(selectedId);
+          if (q.length > METRICS_CACHE_CAP) {
+            const candidate = q.shift();
+            return candidate !== selectedId ? candidate : null;
+          }
+          return null;
+        })();
+        setImages(imgs => imgs.map(it => {
+          if (it.id === selectedId) return { ...it, metrics: full.metrics || {} };
+          if (it.id === evictId && it.metrics) return { ...it, metrics: undefined };
+          return it;
+        }));
       })
       .catch(err => console.error('loadImageMetrics failed:', err));
     return () => { alive = false; };
@@ -1137,31 +1195,119 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
   const goPrev = useCallback(() => { if (filteredIdx > 0) setSelectedId(filtered[filteredIdx-1].id); }, [filtered, filteredIdx]);
   const goNext = useCallback(() => { if (filteredIdx < filtered.length-1) setSelectedId(filtered[filteredIdx+1].id); }, [filtered, filteredIdx]);
 
-  const updateVerdict = useCallback((verdict, stars) => {
-    if (!selectedId) return;
-    setImages(imgs => imgs.map(img => img.id !== selectedId ? img : {
-      ...img, ...(verdict?{verdict}:{}), ...(stars!=null?{stars}:{}),
+  // Unified verdict/stars/label apply for one or many images. Records the prior
+  // state on the undo stack and persists (single or batch endpoint). `record`
+  // is false when we're replaying an undo (so undo itself isn't re-pushed).
+  const applyVerdict = useCallback((ids, patch, { record = true, undoLabel } = {}) => {
+    ids = ids.filter(Boolean);
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    if (record) {
+      const entries = images.filter(i => idSet.has(i.id))
+        .map(i => ({ id: i.id, verdict: i.verdict, stars: i.stars, label: i.label }));
+      if (entries.length) {
+        undoStack.current.push({ entries, label: undoLabel || 'verdict' });
+        if (undoStack.current.length > 50) undoStack.current.shift();
+      }
+    }
+    setImages(imgs => imgs.map(img => !idSet.has(img.id) ? img : {
+      ...img,
+      ...(patch.verdict !== undefined ? { verdict: patch.verdict } : {}),
+      ...(patch.stars   !== undefined ? { stars: patch.stars } : {}),
+      ...(patch.label   !== undefined ? { label: patch.label } : {}),
     }));
-    window.SG_API.verdict(selectedId, {
-      ...(verdict ? { verdict } : {}),
-      ...(stars != null ? { stars } : {}),
-    }).catch(err => console.error('verdict update failed:', err));
-  }, [selectedId]);
+    const body = {};
+    if (patch.verdict !== undefined) body.verdict = patch.verdict;
+    if (patch.stars   !== undefined) body.stars = patch.stars;
+    if (patch.label   !== undefined) body.label = patch.label;
+    const p = ids.length === 1
+      ? window.SG_API.verdict(ids[0], body)
+      : window.SG_API.verdictBatch(ids, body);
+    p.catch(err => console.error('verdict update failed:', err));
+  }, [images]);
+
+  // Target of a verdict action: the multi-selection if any, else the single
+  // selected frame.
+  const verdictTargets = useCallback(
+    () => (multiSel.size ? [...multiSel] : (selectedId ? [selectedId] : [])),
+    [multiSel, selectedId]);
+
+  // DetailPanel / Lightbox single-frame verdict (verdict, stars, [label]).
+  const updateVerdict = useCallback((verdict, stars, label) => {
+    const patch = {};
+    if (verdict !== undefined && verdict !== null) patch.verdict = verdict;
+    if (stars   !== undefined && stars   !== null) patch.stars = stars;
+    if (label   !== undefined) patch.label = label;
+    if (!Object.keys(patch).length) return;
+    applyVerdict([selectedId], patch);
+  }, [applyVerdict, selectedId]);
+
+  // Bulk verdict over the current targets (used by selection toolbar + keys).
+  const bulkVerdict = useCallback((verdict, stars) => {
+    const ids = verdictTargets();
+    const patch = {};
+    if (verdict != null) patch.verdict = verdict;
+    if (stars != null) patch.stars = stars;
+    applyVerdict(ids, patch, { undoLabel: `${ids.length} frame${ids.length === 1 ? '' : 's'}` });
+  }, [applyVerdict, verdictTargets]);
+
+  const undo = useCallback(() => {
+    const last = undoStack.current.pop();
+    if (!last) { showFlash('Nothing to undo'); return; }
+    last.entries.forEach(e => {
+      setImages(imgs => imgs.map(img => img.id !== e.id ? img
+        : { ...img, verdict: e.verdict, stars: e.stars, label: e.label }));
+    });
+    const ids = last.entries.map(e => e.id);
+    // Persist the restored values (per-row, since they may differ).
+    last.entries.forEach(e => window.SG_API.verdict(e.id, {
+      verdict: e.verdict, stars: e.stars, label: e.label ?? null,
+    }).catch(err => console.error('undo persist failed:', err)));
+    showFlash(`Undo · ${ids.length} frame${ids.length === 1 ? '' : 's'}`);
+  }, [showFlash]);
+
+  // Selection click: plain = single, ⌘/Ctrl = toggle, Shift = range from anchor.
+  const onPick = useCallback((id, e) => {
+    if (e && e.shiftKey && anchorRef.current != null) {
+      const ids = filtered.map(i => i.id);
+      const a = ids.indexOf(anchorRef.current), b = ids.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setMultiSel(new Set(ids.slice(lo, hi + 1)));
+      }
+      setSelectedId(id);
+    } else if (e && (e.metaKey || e.ctrlKey)) {
+      setMultiSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+      setSelectedId(id); anchorRef.current = id;
+    } else {
+      setMultiSel(new Set()); setSelectedId(id); anchorRef.current = id;
+    }
+  }, [filtered]);
+
+  const clearSelection = useCallback(() => setMultiSel(new Set()), []);
+
+  const revealInFinder = useCallback(id => {
+    window.SG_API.reveal(id).catch(err => { console.error('reveal failed:', err); showFlash('Reveal failed'); });
+  }, [showFlash]);
 
   useEffect(()=>{
     const h=e=>{
       if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') return;
+      if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); return; }
       if(lightbox) return;
+      const n=multiSel.size;
+      const suffix=n>1?` ·${n}`:'';
+      if(e.key==='Escape'&&n){ clearSelection(); return; }
       if(e.key==='j'||e.key==='ArrowRight') goNext();
       if(e.key==='k'||e.key==='ArrowLeft')  goPrev();
-      if(e.key==='z'){ updateVerdict('keeper',null); showFlash('Keeper'); }
-      if(e.key==='c'){ updateVerdict('review',null); showFlash('Review'); }
-      if(e.key==='x'){ updateVerdict('reject',null); showFlash('Reject'); }
-      if('12345'.includes(e.key)){ updateVerdict(null,parseInt(e.key)); showFlash(`${e.key} ★`); }
+      if(e.key==='z'){ bulkVerdict('keeper',null); showFlash('Keeper'+suffix); }
+      if(e.key==='c'){ bulkVerdict('review',null); showFlash('Review'+suffix); }
+      if(e.key==='x'){ bulkVerdict('reject',null); showFlash('Reject'+suffix); }
+      if('12345'.includes(e.key)){ bulkVerdict(null,parseInt(e.key)); showFlash(`${e.key} ★`+suffix); }
     };
     window.addEventListener('keydown',h);
     return ()=>window.removeEventListener('keydown',h);
-  },[goNext,goPrev,updateVerdict,lightbox,showFlash]);
+  },[goNext,goPrev,bulkVerdict,undo,clearSelection,multiSel,lightbox,showFlash]);
 
   const stripStats = useMemo(()=>{
     const lib = activeLib!==null?MOCK_LIBRARIES.find(l=>l.id===activeLib):null;
@@ -1191,7 +1337,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
       <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,minHeight:0}}>
         {/* Merged stat + filter bar — one row: counts left, controls right. */}
         <div className="sg-filterbar" style={{gap:6}}>
-          <span style={{fontFamily:'var(--font-display)',fontStyle:'italic',fontSize:15,color:'var(--c-text)',marginRight:4}}>{stripStats.name}</span>
+          <span style={{fontWeight:600,fontSize:13,color:'var(--c-text)',marginRight:4}}>{stripStats.name}</span>
           <span style={{fontVariantNumeric:'tabular-nums'}}>{filtered.length}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--c-mute)',fontStyle:'normal',marginLeft:4}}>shown</em></span>
           <span style={{color:'var(--c-keeper)',fontVariantNumeric:'tabular-nums'}}>{stripStats.keep}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>keep</em></span>
           <span style={{color:'var(--c-amber)',fontVariantNumeric:'tabular-nums'}}>{stripStats.review}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>review</em></span>
@@ -1200,16 +1346,14 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
           <div style={{width:1,background:'var(--c-border)',height:18,margin:'0 4px',flexShrink:0}}/>
 
           {/* Verdict quick chips */}
-          {['all','keeper','review','reject'].map(v=>(
-            <Chip key={v} on={filters.verdict===v} onClick={()=>upd('verdict',v)}>{v}</Chip>
-          ))}
+          <VerdictChips value={filters.verdict} onChange={v=>upd('verdict',v)} />
 
           <div style={{width:1,background:'var(--c-border)',height:18,margin:'0 2px',flexShrink:0}}/>
 
           {/* Filter panel toggle */}
           <button onClick={()=>setPanelOpen(o=>!o)} style={{
             display:'inline-flex', alignItems:'center', gap:6, padding:'5px 13px',
-            fontSize:9, letterSpacing:'0.22em', textTransform:'uppercase',
+            fontSize:10, letterSpacing: '0.1em', textTransform:'uppercase',
             border:`1px solid ${panelOpen||activeCount>0?'var(--c-accent)':'var(--c-border2)'}`,
             color: panelOpen||activeCount>0?'var(--c-accent)':'var(--c-text2)',
             background: panelOpen?'rgba(193,68,14,0.1)':'transparent',
@@ -1220,7 +1364,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
             {activeCount>0&&(
               <span style={{
                 background:'var(--c-accent)', color:'var(--c-bg)',
-                fontSize:8, padding:'1px 5px', borderRadius:999,
+                fontSize:10, padding:'1px 5px', borderRadius:999,
                 fontFamily:'var(--font-ui)', fontWeight:700, lineHeight:'1.4',
               }}>{activeCount}</span>
             )}
@@ -1232,7 +1376,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
               {activeChips.map(chip=>(
                 <button key={chip.id} onClick={chip.clear} style={{
                   display:'inline-flex', alignItems:'center', gap:4,
-                  padding:'3px 8px', fontSize:9, letterSpacing:'0.14em',
+                  padding:'3px 8px', fontSize:10, letterSpacing:'0.14em',
                   border:'1px solid var(--c-accent)', color:'var(--c-accent)',
                   background:'rgba(193,68,14,0.08)', borderRadius:'var(--radius)',
                   cursor:'pointer', fontFamily:'var(--font-ui)', transition:'all .1s',
@@ -1243,7 +1387,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
               ))}
               {activeChips.length>1&&(
                 <button onClick={()=>setFilters(prev=>({...DEFAULT_FILTERS,verdict:prev.verdict}))} style={{
-                  fontSize:9, letterSpacing:'0.14em', textTransform:'uppercase',
+                  fontSize:10, letterSpacing:'0.14em', textTransform:'uppercase',
                   color:'var(--c-danger)', background:'none', border:'none',
                   cursor:'pointer', fontFamily:'var(--font-ui)',
                 }}>clear all ×</button>
@@ -1252,22 +1396,54 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
           )}
 
           <div style={{flex:1}}/>
-          <div style={{fontSize:9,letterSpacing:'0.16em',textTransform:'uppercase',color:'var(--c-mute)',display:'flex',gap:6,alignItems:'center',flexShrink:0}}>
+          <div style={{fontSize:10,letterSpacing:'0.16em',textTransform:'uppercase',color:'var(--c-mute)',display:'flex',gap:6,alignItems:'center',flexShrink:0}}>
             <kbd className="sg-kbd">J</kbd><kbd className="sg-kbd">K</kbd> nav ·
             <kbd className="sg-kbd">Z</kbd><kbd className="sg-kbd">C</kbd><kbd className="sg-kbd">X</kbd> verdict
           </div>
         </div>
 
+        {/* Search-scope banner — Triage is showing semantic-search results. */}
+        {searchScope && (
+          <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 18px',
+                       borderBottom:'1px solid var(--c-border)',background:'rgba(193,68,14,0.06)',flexShrink:0}}>
+            <span style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',color:'var(--c-accent)'}}>
+              Search · “{searchScope.query}” · {filtered.length} shown
+            </span>
+            <div style={{flex:1}}/>
+            <button onClick={()=>setSearchScope(null)} style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',color:'var(--c-danger)',background:'none',border:'none',cursor:'pointer',fontFamily:'var(--font-ui)'}}>exit search ×</button>
+          </div>
+        )}
+
+        {/* Bulk-action bar — appears only while a multi-selection is live. */}
+        {multiSel.size > 0 && (
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 18px',
+                       borderBottom:'1px solid var(--c-border)',background:'rgba(193,68,14,0.06)',flexShrink:0,flexWrap:'wrap'}}>
+            <span style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',color:'var(--c-accent)'}}>
+              {multiSel.size} selected
+            </span>
+            <div style={{width:1,height:16,background:'var(--c-border2)'}}/>
+            <Chip onClick={()=>bulkVerdict('keeper',null)}>Keeper</Chip>
+            <Chip onClick={()=>bulkVerdict('review',null)}>Review</Chip>
+            <Chip onClick={()=>bulkVerdict('reject',null)}>Reject</Chip>
+            <div style={{flex:1}}/>
+            <span style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',color:'var(--c-mute)'}}>
+              ⇧ click range · ⌘ click toggle
+            </span>
+            <button onClick={clearSelection} style={{fontSize:'var(--cap-size)',letterSpacing:'var(--cap-track)',textTransform:'uppercase',color:'var(--c-danger)',background:'none',border:'none',cursor:'pointer',fontFamily:'var(--font-ui)'}}>clear ×</button>
+          </div>
+        )}
+
         {/* Grid / filmstrip */}
         <div style={{flex:1,display:'flex',minHeight:0}}>
           {layout==='grid'?(
-            <GridLayout items={filtered} selectedId={selectedId} onSelect={setSelectedId}
+            <GridLayout items={filtered} selectedId={selectedId} multiSel={multiSel} onSelect={onPick}
               onDoubleClick={id=>{setSelectedId(id);setLightbox(true);}}/>
           ):(
-            <FilmstripLayout items={filtered} selectedId={selectedId} onSelect={setSelectedId}
+            <FilmstripLayout items={filtered} selectedId={selectedId} onSelect={id=>onPick(id)}
               onPrev={goPrev} onNext={goNext} onDoubleClick={id=>{setSelectedId(id);setLightbox(true);}}/>
           )}
           <DetailPanel image={selectedImage} onVerdict={updateVerdict}
+            onReveal={revealInFinder}
             onOpenLightbox={()=>setLightbox(true)} compact={layout==='filmstrip'}/>
         </div>
       </div>
@@ -1283,7 +1459,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
                       padding:'10px 22px', borderRadius:'var(--radius)',
                       background:'rgba(10,9,7,0.85)', border:`1px solid ${verdictColor(flash.toLowerCase())}`,
                       color:verdictColor(flash.toLowerCase()),
-                      fontFamily:'var(--font-display)', fontStyle:'italic', fontSize:30, lineHeight:1,
+                      fontFamily:'var(--font-ui)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.1em', fontSize:20, lineHeight:1,
                       animation:'sg-fade .12s ease-out' }}>
           {flash}
         </div>

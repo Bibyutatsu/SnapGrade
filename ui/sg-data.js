@@ -166,7 +166,8 @@
     const boot = document.getElementById('sg-boot');
     if (boot) {
       boot.className = 'err';
-      boot.textContent = `failed to load: ${err.message}`;
+      const msg = boot.querySelector('.sg-boot-msg');
+      if (msg) msg.textContent = `Couldn't reach the SnapGrade server — ${err.message}`;
     }
     throw err;
   });
@@ -203,7 +204,9 @@
     removeLibrary(id) { return jdel(`/api/libraries/${id}`); },
 
     verdict(id, payload) { return jpost(`/api/images/${id}/verdict`, payload); },
+    verdictBatch(imageIds, payload) { return jpost('/api/verdicts', { image_ids: imageIds, ...payload }); },
     xmp(id) { return jpost(`/api/images/${id}/xmp`); },
+    reveal(id) { return jpost(`/api/images/${id}/reveal`); },
 
     organize(payload) { return jpost('/api/organize', payload); },
     reclassify(t) { return jpost('/api/reclassify', t); },

@@ -67,9 +67,10 @@ CREATE TABLE IF NOT EXISTS metrics (
 CREATE TABLE IF NOT EXISTS verdicts (
     image_id INTEGER PRIMARY KEY REFERENCES images(id) ON DELETE CASCADE,
     verdict TEXT NOT NULL,        -- keeper | review | reject
-    stars INTEGER NOT NULL,       -- 1..5
+    stars INTEGER NOT NULL,       -- 0..5 (0 = reject)
     label TEXT,                   -- color label (red/yellow/green/blue/purple)
-    reasons TEXT,                 -- JSON array of short strings
+    reasons TEXT,                 -- JSON array of short strings (verdict-driving)
+    warnings TEXT,                -- JSON array of advisories (non-verdict-driving)
     user_override INTEGER NOT NULL DEFAULT 0
 );
 
@@ -140,6 +141,8 @@ def connect(path: Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate_library_id(conn)
+    if not _has_column(conn, "verdicts", "warnings"):
+        conn.execute("ALTER TABLE verdicts ADD COLUMN warnings TEXT")
     return conn
 
 
@@ -341,14 +344,15 @@ def save_verdict(
     stars: int,
     label: str | None,
     reasons: list[str],
+    warnings: list[str] | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO verdicts(image_id, verdict, stars, label, reasons) VALUES(?,?,?,?,?) "
+        "INSERT INTO verdicts(image_id, verdict, stars, label, reasons, warnings) VALUES(?,?,?,?,?,?) "
         "ON CONFLICT(image_id) DO UPDATE SET "
         "  verdict=excluded.verdict, stars=excluded.stars, "
-        "  label=excluded.label, reasons=excluded.reasons "
+        "  label=excluded.label, reasons=excluded.reasons, warnings=excluded.warnings "
         "WHERE user_override=0",
-        (image_id, verdict, stars, label, json.dumps(reasons)),
+        (image_id, verdict, stars, label, json.dumps(reasons), json.dumps(warnings or [])),
     )
 
 

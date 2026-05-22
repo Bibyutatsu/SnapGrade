@@ -261,6 +261,7 @@ uv run snapgrade serve
 | `SNAPGRADE_SCENE_MODEL` | `~/.snapgrade/models/places365.mlpackage` | Custom Places365 path |
 | `SNAPGRADE_SCENE_LABELS` | `~/.snapgrade/models/places365_labels.txt` | Newline-separated Places365 class labels |
 | `SNAPGRADE_SCREENDOC_MODEL` | `~/.snapgrade/models/screendoc.mlpackage` | Custom screenshot/document head path |
+| `SNAPGRADE_ENABLE_SEMANTIC` | unset | Set to `1` to compute MobileCLIP semantic embeddings during analysis (enables text search). Equivalent to passing `semantic` in the model list, or ticking "Semantic search index" in the UI's Develop screen. |
 
 ## Runtime dependencies for optional models
 

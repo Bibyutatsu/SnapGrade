@@ -37,6 +37,7 @@ class EyeReport:
     min_ear: float | None
     max_blink: float | None
     any_closed: bool
+    closed_count: int = 0  # how many (primary) faces have closed eyes
     # Per-face expression (parallel to `ears` / `blinks`). Empty when no
     # blendshapes were produced.
     smiles: tuple[float, ...] = ()
@@ -135,6 +136,7 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
     frowns: list[float] = []
     brows_down: list[float] = []
     any_closed = False
+    closed_count = 0
 
     for face in faces:
         crop = _pad_crop(rgb, face.bbox, pad=0.4)
@@ -163,6 +165,7 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
 
         if max(bl, br) >= CLOSED_BLEND_THRESHOLD or min(left, right) < CLOSED_EAR_THRESHOLD:
             any_closed = True
+            closed_count += 1
 
     return EyeReport(
         faces=len(ears),
@@ -171,6 +174,7 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         min_ear=float(min(ears)) if ears else None,
         max_blink=max((max(b) for b in blinks), default=None) if blinks else None,
         any_closed=any_closed,
+        closed_count=closed_count,
         smiles=tuple(smiles),
         frowns=tuple(frowns),
         brows_down=tuple(brows_down),
