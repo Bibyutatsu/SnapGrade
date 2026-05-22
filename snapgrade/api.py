@@ -610,14 +610,17 @@ def get_thumb(image_id: int, size: int = Query(512, ge=64, le=2048)) -> Response
 
 
 @app.get("/api/images/{image_id}/preview")
-def get_preview(image_id: int) -> Response:
+def get_preview(image_id: int, long_edge: int = Query(1600, ge=256, le=6000)) -> Response:
+    # Default 1600 px is the fast fit-view preview; the lightbox requests a larger
+    # long_edge on first zoom so pixel-peeping shows real detail (never upscaled —
+    # decode caps at native).
     conn = _conn()
     resolved = _resolve_image_path(conn, image_id)
     if resolved is None:
         exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
         raise HTTPException(410 if exists else 404, "source file missing")
     path, _ = resolved
-    data = thumb.render_to_bytes(path, long_edge=1600)
+    data = thumb.render_to_bytes(path, long_edge=long_edge)
     return Response(content=data, media_type="image/jpeg")
 
 
