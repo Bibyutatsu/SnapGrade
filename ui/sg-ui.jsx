@@ -1079,9 +1079,8 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
         <div className="sg-lb-meta">
           <h4 style={{ fontFamily: 'var(--font-ui)', fontStyle: 'normal', fontSize: 15,
                        fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>
-            №{pad(image.id, 4)}{' '}
             {idx >= 0 && items && (
-              <span style={{ fontSize: 12, color: 'var(--c-mute)' }}>· {idx + 1}/{items.length}</span>
+              <span style={{ fontSize: 12, color: 'var(--c-mute)' }}>{idx + 1}/{items.length}</span>
             )}
           </h4>
           <p>{image.path}</p>

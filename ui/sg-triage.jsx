@@ -975,7 +975,6 @@ function ThumbCard({ item, selected, multiSelected, idx, onClick, onDoubleClick 
         )}
       </div>
       <div className="sg-thumb-strip">
-        <span style={{ fontFamily:'var(--font-ui)', fontSize:11, color:'var(--c-accent)', fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(item.id,4)}</span>
         <span style={{ letterSpacing:0, color:'var(--c-amber)', fontSize:11 }}>{item.verdict==='reject' ? '' : `${'★'.repeat(item.stars||0)}${'·'.repeat(5-(item.stars||0))}`}</span>
       </div>
       <div style={{ height:4, background: item.verdict==='keeper'?'var(--c-keeper)':item.verdict==='review'?'var(--c-amber)':item.verdict==='reject'?'var(--c-danger)':'transparent' }} />
@@ -1100,12 +1099,99 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
   );
 }
 
+const SORT_OPTIONS = [
+  { value: 'timestamp',    label: 'Date Taken' },
+  { value: 'aesthetic',    label: 'Aesthetic' },
+  { value: 'sharpness',    label: 'Sharpness' },
+  { value: 'stars',        label: 'Stars' },
+  { value: 'iso',          label: 'ISO' },
+  { value: 'aperture',     label: 'Aperture' },
+  { value: 'exposure',     label: 'Exposure' },
+  { value: 'color_temp',   label: 'Color Temp' },
+  { value: 'filename',     label: 'Filename' },
+];
+
+function SortPicker({ sortKey, setSortKey, sortDir, setSortDir }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    window.addEventListener('click', h);
+    return () => window.removeEventListener('click', h);
+  }, []);
+
+  const active = SORT_OPTIONS.find(o => o.value === sortKey) || SORT_OPTIONS[0];
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+      <button onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 13px',
+          fontSize: 10, letterSpacing: '0.15em', textTransform: 'uppercase',
+          border: `1px solid ${open ? 'var(--c-accent)' : 'var(--c-border2)'}`,
+          color: open ? 'var(--c-accent)' : 'var(--c-text2)',
+          background: open ? 'rgba(193,68,14,0.1)' : 'transparent',
+          borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'var(--font-ui)',
+          transition: 'all .12s', height: 26, boxSizing: 'border-box'
+        }}>
+        <span>Sort: {active.label}</span>
+        <span style={{ fontSize: 10, color: 'var(--c-mute)' }}>▾</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+          minWidth: 160, zIndex: 10002,
+          background: 'var(--c-panel)', border: '1px solid var(--c-border2)',
+          boxShadow: 'var(--shadow)', borderRadius: 'var(--radius)',
+          padding: 4, fontFamily: 'var(--font-ui)',
+        }}>
+          {SORT_OPTIONS.map(o => (
+            <button key={o.value} onClick={() => { setSortKey(o.value); setOpen(false); }}
+              style={{
+                display: 'flex', alignItems: 'center',
+                width: '100%', padding: '8px 10px',
+                background: sortKey === o.value ? 'rgba(193,68,14,0.08)' : 'transparent',
+                border: 'none', cursor: 'pointer',
+                color: sortKey === o.value ? 'var(--c-accent)' : 'var(--c-text)',
+                borderRadius: 'calc(var(--radius) - 1px)',
+                fontFamily: 'var(--font-ui)',
+                textAlign: 'left', transition: 'background .1s',
+                fontSize: 11,
+              }}>
+              <span>{o.label}</span>
+              {sortKey === o.value && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--c-accent)' }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <button onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+        title={`Sort ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
+        style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 26, height: 26,
+          fontSize: 12,
+          border: '1px solid var(--c-border2)',
+          color: 'var(--c-text2)',
+          background: 'transparent',
+          borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'var(--font-ui)',
+          transition: 'all .12s', boxSizing: 'border-box'
+        }}>
+        {sortDir === 'desc' ? '↓' : '↑'}
+      </button>
+    </div>
+  );
+}
+
 // ── Main Triage Screen ────────────────────────────────────────────────────────
 function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, setPanelOpen }) {
   const { MOCK_IMAGES, MOCK_LIBRARIES } = window.SG_DATA;
 
   const [filters, setFilters]     = useState(DEFAULT_FILTERS);
   const [selectedId, setSelectedId] = useState(MOCK_IMAGES[0]?.id ?? null);
+  const [sortKey, setSortKey]     = useState('timestamp');
+  const [sortDir, setSortDir]     = useState('asc');
   const [images, setImages]       = useState(MOCK_IMAGES);
   const [lightbox, setLightbox]   = useState(false);
   // Multi-select for bulk culling: a Set of ids. Empty ⇒ act on selectedId only.
@@ -1154,8 +1240,61 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
   // Apply all filters + library/search scope
   const filtered = useMemo(() => applyFilters(scoped, filters), [scoped, filters]);
 
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let valA, valB;
+      if (sortKey === 'timestamp') {
+        valA = a.capture_time ? Date.parse(a.capture_time) : 0;
+        valB = b.capture_time ? Date.parse(b.capture_time) : 0;
+      } else if (sortKey === 'aesthetic') {
+        valA = a.aesthetic_score ?? 0;
+        valB = b.aesthetic_score ?? 0;
+      } else if (sortKey === 'sharpness') {
+        valA = a.sharpness ?? 0;
+        valB = b.sharpness ?? 0;
+      } else if (sortKey === 'stars') {
+        valA = a.stars ?? 0;
+        valB = b.stars ?? 0;
+      } else if (sortKey === 'iso') {
+        valA = typeof a.iso === 'number' ? a.iso : parseFloat(a.iso) || 0;
+        valB = typeof b.iso === 'number' ? b.iso : parseFloat(b.iso) || 0;
+      } else if (sortKey === 'aperture') {
+        valA = typeof a.f_number === 'number' ? a.f_number : parseFloat(a.f_number) || 999;
+        valB = typeof b.f_number === 'number' ? b.f_number : parseFloat(b.f_number) || 999;
+      } else if (sortKey === 'exposure') {
+        const parseExp = (val) => {
+          if (!val || val === '—') return 0;
+          if (typeof val === 'number') return val;
+          if (val.includes('/')) {
+            const parts = val.split('/');
+            return parseFloat(parts[0]) / (parseFloat(parts[1]) || 1);
+          }
+          return parseFloat(val) || 0;
+        };
+        valA = parseExp(a.exposure_time);
+        valB = parseExp(b.exposure_time);
+      } else if (sortKey === 'color_temp') {
+        const ranks = { cool: 1, neutral: 2, warm: 3 };
+        valA = ranks[a.color?.temperature] || 0;
+        valB = ranks[b.color?.temperature] || 0;
+      } else if (sortKey === 'filename') {
+        valA = a.path || '';
+        valB = b.path || '';
+        if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+        if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      }
+
+      if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+      if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+      return a.id - b.id;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDir]);
+
   const selectedImage = images.find(i => i.id === selectedId) || null;
-  const filteredIdx   = filtered.findIndex(i => i.id === selectedId);
+  const sortedIdx     = sorted.findIndex(i => i.id === selectedId);
 
   // Lazy-fetch the full metrics blob (subjects, eyes, objects, …) for the
   // currently-selected image, so DetailPanel / Lightbox can draw bboxes and
@@ -1193,8 +1332,8 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
     return () => { alive = false; };
   }, [selectedId, images]);
 
-  const goPrev = useCallback(() => { if (filteredIdx > 0) setSelectedId(filtered[filteredIdx-1].id); }, [filtered, filteredIdx]);
-  const goNext = useCallback(() => { if (filteredIdx < filtered.length-1) setSelectedId(filtered[filteredIdx+1].id); }, [filtered, filteredIdx]);
+  const goPrev = useCallback(() => { if (sortedIdx > 0) setSelectedId(sorted[sortedIdx-1].id); }, [sorted, sortedIdx]);
+  const goNext = useCallback(() => { if (sortedIdx < sorted.length-1) setSelectedId(sorted[sortedIdx+1].id); }, [sorted, sortedIdx]);
 
   // Unified verdict/stars/label apply for one or many images. Records the prior
   // state on the undo stack and persists (single or batch endpoint). `record`
@@ -1270,7 +1409,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
   // Selection click: plain = single, ⌘/Ctrl = toggle, Shift = range from anchor.
   const onPick = useCallback((id, e) => {
     if (e && e.shiftKey && anchorRef.current != null) {
-      const ids = filtered.map(i => i.id);
+      const ids = sorted.map(i => i.id);
       const a = ids.indexOf(anchorRef.current), b = ids.indexOf(id);
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a];
@@ -1283,7 +1422,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
     } else {
       setMultiSel(new Set()); setSelectedId(id); anchorRef.current = id;
     }
-  }, [filtered]);
+  }, [sorted]);
 
   const clearSelection = useCallback(() => setMultiSel(new Set()), []);
 
@@ -1371,6 +1510,8 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
             )}
           </button>
 
+          <SortPicker sortKey={sortKey} setSortKey={setSortKey} sortDir={sortDir} setSortDir={setSortDir} />
+
           {/* Active filter dismissibles */}
           {activeChips.length > 0 && (
             <div style={{display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
@@ -1437,10 +1578,10 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
         {/* Grid / filmstrip */}
         <div style={{flex:1,display:'flex',minHeight:0}}>
           {layout==='grid'?(
-            <GridLayout items={filtered} selectedId={selectedId} multiSel={multiSel} onSelect={onPick}
+            <GridLayout items={sorted} selectedId={selectedId} multiSel={multiSel} onSelect={onPick}
               onDoubleClick={id=>{setSelectedId(id);setLightbox(true);}}/>
           ):(
-            <FilmstripLayout items={filtered} selectedId={selectedId} onSelect={id=>onPick(id)}
+            <FilmstripLayout items={sorted} selectedId={selectedId} onSelect={id=>onPick(id)}
               onPrev={goPrev} onNext={goNext} onDoubleClick={id=>{setSelectedId(id);setLightbox(true);}}/>
           )}
           <DetailPanel image={selectedImage} onVerdict={updateVerdict}
@@ -1450,7 +1591,7 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
       </div>
 
       {lightbox&&(
-        <Lightbox image={selectedImage} items={filtered} onClose={()=>setLightbox(false)}
+        <Lightbox image={selectedImage} items={sorted} onClose={()=>setLightbox(false)}
           onVerdict={updateVerdict} onPrev={goPrev} onNext={goNext}/>
       )}
 

@@ -501,8 +501,7 @@ function BurstsScreen() {
                                    transition: cmpDrag.current ? 'none' : 'transform .12s ease-out' }} />
                       </div>
                       <div style={{ padding:'12px 14px' }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-                          <span style={{ fontFamily:'var(--font-ui)', color:'var(--c-accent)', fontSize:12, fontVariantNumeric:'tabular-nums', letterSpacing:'0.02em' }}>№{pad(img.id,4)}</span>
+                        <div style={{ display:'flex', justifyContent:'flex-end', alignItems:'center', marginBottom:8 }}>
                           <span style={{ fontSize:10, letterSpacing: '0.12em', textTransform:'uppercase', color: verdictColor(img.verdict) }}>{img.verdict}</span>
                         </div>
                         <div style={{ marginBottom:10 }}>
@@ -819,8 +818,7 @@ function FacesScreen() {
                       style={{ position:'absolute', top:6, right:6, zIndex:2, width:22, height:22, borderRadius:'50%',
                                background:'rgba(10,9,7,0.75)', color:'var(--c-danger)', border:'1px solid var(--c-danger)',
                                cursor:'pointer', fontSize:12, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
-                    <div style={{ padding:'8px 10px', fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', display:'flex', justifyContent:'space-between' }}>
-                      <span style={{ fontFamily:'var(--font-ui)', fontVariantNumeric:'tabular-nums' }}>№{pad(t.id,4)}</span>
+                    <div style={{ padding:'8px 10px', fontSize:10, color:'var(--c-mute)', letterSpacing:'0.18em', textTransform:'uppercase', display:'flex', justifyContent:'flex-end' }}>
                       <a href={`/api/images/${t.image_id}/preview`} target="_blank" rel="noreferrer"
                          onClick={e => e.stopPropagation()} style={{ color:'var(--c-accent)' }}>open ↗</a>
                     </div>
@@ -929,7 +927,6 @@ function XMPExportScreen() {
                     <td style={{ padding:'9px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                         <img src={img.thumb} alt="" style={{ width:40, height:28, objectFit:'cover', borderRadius:'var(--radius)', flexShrink:0 }} />
-                        <span style={{ fontFamily:'var(--font-ui)', color:'var(--c-accent)', fontSize:12, fontVariantNumeric:'tabular-nums' }}>№{pad(img.id,4)}</span>
                       </div>
                     </td>
                     <td style={{ padding:'9px 12px', fontSize:10, color:'var(--c-mute)', whiteSpace:'nowrap', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis' }}>{lib ? (lib.display_name || lib.root_path.split('/').pop()) : '—'}</td>
