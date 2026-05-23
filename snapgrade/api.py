@@ -322,7 +322,11 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
     return {"started": True, "models": models}
 
 
-_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "depth", "content_type")
+_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "depth", "content_type", "semantic")
+
+# A few selectable models live in differently-named metric modules; map the
+# UI/API model name to its implementing module for availability probing.
+_MODEL_MODULES = {"semantic": "embed"}
 
 # Public URLs for model weights, built from the community model host.
 # The user can override per-request via the `url` query param to /download.
@@ -332,6 +336,7 @@ MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
     "objects": {"url": f"{_REPO}/yolo26n.mlpackage.zip", "filename": "yolo26n.mlpackage"},
     "scene": {"url": f"{_REPO}/places365.mlpackage.zip", "filename": "places365.mlpackage"},
     "depth": {"url": f"{_REPO}/depth_anything_v2_small.mlpackage.zip", "filename": "depth_anything_v2_small.mlpackage"},
+    "semantic": {"url": f"{_REPO}/mobileclip_s0_image.mlpackage.zip", "filename": "mobileclip_s0_image.mlpackage"},
     # content_type uses Apple Vision (no download); intentionally absent here.
 }
 
@@ -343,7 +348,7 @@ def _available_models() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for name in _AVAILABLE_MODEL_NAMES:
         try:
-            mod = __import__(f"snapgrade.metrics.{name}", fromlist=["is_available"])
+            mod = __import__(f"snapgrade.metrics.{_MODEL_MODULES.get(name, name)}", fromlist=["is_available"])
             avail = bool(mod.is_available())
         except Exception:
             avail = False

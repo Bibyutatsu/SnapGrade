@@ -446,9 +446,12 @@ function ThemePicker({ theme, onThemeChange }) {
         <span style={{ fontSize: 10, color: 'var(--c-mute)' }}>▾</span>
       </button>
       {open && (
+        // Must clear the photo panes (.sg-grid/.sg-detail/.sg-scroll = 10000) and
+        // lightbox/modal (10000/10001); otherwise the menu renders behind page
+        // content and its lower items become both invisible and unclickable.
         <div style={{
           position: 'absolute', top: 'calc(100% + 6px)', right: 0,
-          minWidth: 180, zIndex: 100,
+          minWidth: 180, zIndex: 10002,
           background: 'var(--c-panel)', border: '1px solid var(--c-border2)',
           boxShadow: 'var(--shadow)', borderRadius: 'var(--radius)',
           padding: 4, fontFamily: 'var(--font-ui)',
