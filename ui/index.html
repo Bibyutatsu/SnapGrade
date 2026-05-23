@@ -507,6 +507,14 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   z-index: 10000; display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   animation: sg-fade .18s ease-out;
+  /* Force dark-theme colors locally inside the lightbox so all text and UI elements stay visible on the dark backdrop */
+  --c-text:    #ece5d3;
+  --c-text2:   #b8b09c;
+  --c-mute:    #6e6657;
+  --c-border:  #2a2520;
+  --c-border2: #3a342c;
+  --c-panel:   #161310;
+  --c-panel2:  #1d1915;
 }
 .sg-lb-close {
   position: absolute; top: 20px; right: 24px;
@@ -614,10 +622,10 @@ html.light-pro .sg-filterbar { background: var(--c-panel2); }
   <script src="sg-data.js"></script>
 
   <!-- Components — order matters: each file declares globals for the next -->
-  <script type="text/babel" src="tweaks-panel.jsx"></script>
-  <script type="text/babel" src="sg-ui.jsx"></script>
-  <script type="text/babel" src="sg-triage.jsx"></script>
-  <script type="text/babel" src="sg-screens.jsx"></script>
-  <script type="text/babel" src="sg-app.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx?v=1.0.1"></script>
+  <script type="text/babel" src="sg-ui.jsx?v=1.0.1"></script>
+  <script type="text/babel" src="sg-triage.jsx?v=1.0.1"></script>
+  <script type="text/babel" src="sg-screens.jsx?v=1.0.1"></script>
+  <script type="text/babel" src="sg-app.jsx?v=1.0.1"></script>
 </body>
 </html>

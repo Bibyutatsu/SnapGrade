@@ -540,13 +540,14 @@ function ImageWithOverlays({ src, fallbackSrc, subjects, objects, decoded, ocr, 
     const img  = imgRef.current;
     const wrap = wrapRef.current;
     if (!img || !wrap || !img.naturalWidth || !img.naturalHeight) return;
-    const r = wrap.getBoundingClientRect();
-    if (!r.width || !r.height) return;
+    const w_width = wrap.offsetWidth;
+    const w_height = wrap.offsetHeight;
+    if (!w_width || !w_height) return;
     const ar = img.naturalWidth / img.naturalHeight;
     let w, h;
-    if (r.width / r.height > ar) { h = r.height; w = r.height * ar; }
-    else                          { w = r.width;  h = r.width / ar;  }
-    setBox({ left: (r.width - w) / 2, top: (r.height - h) / 2, width: w, height: h });
+    if (w_width / w_height > ar) { h = w_height; w = w_height * ar; }
+    else                          { w = w_width;  h = w_width / ar;  }
+    setBox({ left: (w_width - w) / 2, top: (w_height - h) / 2, width: w, height: h });
   }, []);
 
   useEffect(() => {
@@ -596,7 +597,9 @@ function SubjectOverlay({ subjects, decoded }) {
       {subjects.map((s, i) => (
         <div key={i} style={bboxStyle(s, decoded)}>
           <span style={{
-            position: 'absolute', top: -16, left: 0,
+            position: 'absolute',
+            top: (s.bbox && s.bbox[1] < 30) ? 0 : -16,
+            left: 0,
             fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase',
             padding: '1px 5px', fontFamily: 'var(--font-ui)',
             background: s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)',
@@ -632,7 +635,9 @@ function ObjectOverlay({ objects, decoded }) {
             border: '2px dashed var(--c-amber)', boxSizing: 'border-box', pointerEvents: 'none',
           }}>
             <span style={{
-              position: 'absolute', bottom: -16, left: 0,
+              position: 'absolute',
+              bottom: (dh - y1 < 30) ? 0 : -16,
+              left: 0,
               fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase',
               padding: '1px 5px', fontFamily: 'var(--font-ui)',
               background: 'var(--c-amber)', color: 'var(--c-bg)', whiteSpace: 'nowrap',
