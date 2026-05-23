@@ -169,6 +169,11 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     eyes_score = _eyes_score(eyes, t.ear_closed, t.ear_open)
     comp_score = _composition_score_opt(comp)
     aesthetic_score = metrics.get("aesthetic_score")
+    aesthetic_source = metrics.get("aesthetic_source")
+    if aesthetic_score is not None and aesthetic_source == "topiq":
+        # Normalize TopIQ's typical [0.35, 0.75] range to [0.0, 1.0] so it
+        # contributes fairly to the combined score and stars.
+        aesthetic_score = max(0.0, min(1.0, (aesthetic_score - 0.35) / 0.40))
 
     # Weighted score over only the terms that have a real signal — missing
     # aesthetic / eyes / composition drop out and the remaining weights are

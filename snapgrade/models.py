@@ -96,6 +96,7 @@ _REGISTRY = {
     # coremltools 9.0 bug with multi-element int casts; HyperIQA's pure
     # conv+linear graph converts cleanly.)
     "hyperiqa": ("hyperiqa.mlpackage", f"{MODELS_REPO_RAW}/hyperiqa.mlpackage.zip"),
+    "topiq": ("topiq.mlpackage", f"{MODELS_REPO_RAW}/topiq.mlpackage.zip"),
     # MobileCLIP-S0 — Apple's ANE-friendly CLIP variant. Image tower + text
     # tower are separate .mlpackages so we can load only what's needed.
     "mobileclip_image": (
@@ -114,7 +115,7 @@ _REGISTRY = {
 # YuNet + face_landmarker auto-download on first analyze, so they're excluded.
 OPTIONAL_MODELS = (
     "u2netp_coreml", "yolo26n_coreml", "yunet_coreml", "depth_coreml",
-    "hyperiqa", "nima", "places365", "places365_labels",
+    "hyperiqa", "topiq", "nima", "places365", "places365_labels",
     "mobileclip_image", "mobileclip_text",
 )
 
