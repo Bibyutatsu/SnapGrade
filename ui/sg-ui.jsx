@@ -531,7 +531,7 @@ function bboxStyle(s, decoded) {
 // (letterboxed) image rect, so SubjectOverlay / OCR rects scale correctly.
 // Without this, bbox percentages would be relative to the full wrapper, not
 // the visible image, and the boxes would float into the black bars.
-function ImageWithOverlays({ src, fallbackSrc, subjects, decoded, ocr, naturalSize, showBoxes = true, imgStyle = {} }) {
+function ImageWithOverlays({ src, fallbackSrc, subjects, objects, decoded, ocr, naturalSize, showBoxes = true, imgStyle = {} }) {
   const imgRef  = useRef(null);
   const wrapRef = useRef(null);
   const [box, setBox] = useState(null);
@@ -571,6 +571,7 @@ function ImageWithOverlays({ src, fallbackSrc, subjects, decoded, ocr, naturalSi
         <div style={{ position: 'absolute', left: box.left, top: box.top,
                       width: box.width, height: box.height, pointerEvents: 'none' }}>
           {subjects?.length > 0 && <SubjectOverlay subjects={subjects} decoded={decoded} />}
+          {objects?.length > 0 && <ObjectOverlay objects={objects} decoded={decoded} />}
           {ocr?.length > 0 && W > 0 && H > 0 && ocr.map((r, i) => {
             const [x0, y0, x1, y1] = r.bbox;
             return (
@@ -601,11 +602,47 @@ function SubjectOverlay({ subjects, decoded }) {
             background: s.is_primary ? 'var(--c-accent)' : 'var(--c-text2)',
             color: 'var(--c-bg)',
           }}>
-            {s.is_primary ? 'subj' : (s.kind || 'obj')}
+            {/* A saliency hit is a salient *scene region* (no face was found), not a
+                detected subject — label it as such so it doesn't read as "the subject". */}
+            {s.kind === 'saliency' ? 'scene' : s.kind === 'person' ? 'person' : s.is_primary ? 'subj' : (s.kind || 'obj')}
             {s.confidence != null && <span style={{ marginLeft: 4, opacity: 0.8 }}>{Math.round(s.confidence * 100)}</span>}
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// YOLO object detections — drawn distinctly (dashed amber) from face/scene
+// subjects so they don't read as the primary subject. Bboxes are xyxy in the
+// decoded image's pixel space, same frame as decoded_size = [w, h].
+function ObjectOverlay({ objects, decoded }) {
+  if (!objects?.length || !decoded) return null;
+  const [dw, dh] = decoded;
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+      {objects.map((d, i) => {
+        if (!d?.bbox) return null;
+        const [x0, y0, x1, y1] = d.bbox;
+        return (
+          <div key={`obj${i}`} style={{
+            position: 'absolute',
+            left: `${100 * x0 / dw}%`, top: `${100 * y0 / dh}%`,
+            width: `${100 * (x1 - x0) / dw}%`, height: `${100 * (y1 - y0) / dh}%`,
+            border: '2px dashed var(--c-amber)', boxSizing: 'border-box', pointerEvents: 'none',
+          }}>
+            <span style={{
+              position: 'absolute', bottom: -16, left: 0,
+              fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase',
+              padding: '1px 5px', fontFamily: 'var(--font-ui)',
+              background: 'var(--c-amber)', color: 'var(--c-bg)', whiteSpace: 'nowrap',
+            }}>
+              {d.class}
+              {d.conf != null && <span style={{ marginLeft: 4, opacity: 0.8 }}>{Math.round(d.conf * 100)}</span>}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -687,6 +724,7 @@ function DetailPanel({ image, onVerdict, onReveal, onOpenLightbox, compact }) {
           <img src={m.thumb} alt="" style={{ width: '100%', display: 'block' }}
                onError={e => { if (e.currentTarget.src !== m.preview) e.currentTarget.src = m.preview; }} />
           {showBoxes && <SubjectOverlay subjects={m.metrics?.subjects} decoded={m.metrics?.decoded_size} />}
+          {showBoxes && <ObjectOverlay objects={m.metrics?.objects?.detections} decoded={m.metrics?.decoded_size} />}
           <div className="sg-corners" />
           <div className="sg-corners-br" />
           {/* Content-type badge on preview */}
@@ -717,12 +755,12 @@ function DetailPanel({ image, onVerdict, onReveal, onOpenLightbox, compact }) {
       <div className="sg-detail-body">
         <div className="sg-detail-path">{m.path.split('/').pop()}</div>
 
-        {!compact && m.metrics?.subjects?.length > 0 && (
+        {!compact && (m.metrics?.subjects?.length > 0 || m.metrics?.objects?.detections?.length > 0) && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10,
                           letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--c-text2)', cursor: 'pointer' }}>
             <input type="checkbox" checked={showBoxes} onChange={e => setShowBoxes(e.target.checked)}
                    style={{ accentColor: 'var(--c-accent)' }} />
-            Subject bboxes · {m.metrics.subjects.length}
+            Overlays · {(m.metrics?.subjects?.length || 0) + (m.metrics?.objects?.detections?.length || 0)}
           </label>
         )}
 
@@ -1013,6 +1051,7 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
               src={hiRes || image.preview}
               fallbackSrc={image.thumb}
               subjects={image.metrics?.subjects}
+              objects={image.metrics?.objects?.detections}
               decoded={image.metrics?.decoded_size}
               ocr={image.ocr}
               naturalSize={[image.width || 6016, image.height || 4016]}

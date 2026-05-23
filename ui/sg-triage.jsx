@@ -1061,6 +1061,7 @@ function FilmstripLayout({ items, selectedId, onSelect, onPrev, onNext, onDouble
             src={selected.preview}
             fallbackSrc={selected.thumb}
             subjects={selected.metrics?.subjects}
+            objects={selected.metrics?.objects?.detections}
             decoded={selected.metrics?.decoded_size}
             ocr={selected.ocr}
             naturalSize={[selected.width || 6016, selected.height || 4016]}
