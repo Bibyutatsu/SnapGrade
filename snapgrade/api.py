@@ -25,13 +25,21 @@ from . import db, decide, group, models as db_models, organize, pipeline, thumb,
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 INGEST_STATE: dict[str, Any] = {
-    "running": False, "folder": None, "done": 0, "total": None, "error": None,
-    "folders_total": 0, "folders_done": 0,
+    "running": False,
+    "folder": None,
+    "done": 0,
+    "total": None,
+    "error": None,
+    "folders_total": 0,
+    "folders_done": 0,
 }
 FACES_STATE: dict[str, Any] = {
-    "running": False, "stage": None,
-    "done": 0, "total": None,
-    "detected": 0, "clusters": 0,
+    "running": False,
+    "stage": None,
+    "done": 0,
+    "total": None,
+    "detected": 0,
+    "clusters": 0,
     "error": None,
 }
 
@@ -44,9 +52,7 @@ app = FastAPI(title="SnapGrade", version="0.1.0")
 # malicious page silently driving destructive ops (organize move, ingest) against
 # 127.0.0.1 — without needing real auth for a single-user local tool.
 _LOCAL_ORIGINS = [
-    f"http://{host}:{port}"
-    for host in ("127.0.0.1", "localhost")
-    for port in ("8765",)
+    f"http://{host}:{port}" for host in ("127.0.0.1", "localhost") for port in ("8765",)
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -135,23 +141,26 @@ async def select_folder() -> dict[str, Any]:
     the event loop / a worker.
     """
     import subprocess
+
     script = (
         'tell application "System Events" to activate\n'
-        'try\n'
+        "try\n"
         '  set chosen to choose folder with prompt "Select photo folder(s)" with multiple selections allowed\n'
         '  set out to ""\n'
-        '  repeat with f in chosen\n'
-        '    set out to out & POSIX path of f & linefeed\n'
-        '  end repeat\n'
-        '  return out\n'
-        'on error number -128\n'
+        "  repeat with f in chosen\n"
+        "    set out to out & POSIX path of f & linefeed\n"
+        "  end repeat\n"
+        "  return out\n"
+        "on error number -128\n"
         '  return ""\n'
-        'end try'
+        "end try"
     )
 
     def _run_dialog() -> dict[str, Any]:
         try:
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+            res = subprocess.run(
+                ["osascript", "-e", script], capture_output=True, text=True, check=True
+            )
             paths = [p for p in res.stdout.splitlines() if p.strip()]
             return {"paths": paths}
         except subprocess.CalledProcessError:
@@ -186,7 +195,8 @@ def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) ->
     existing = {str(p) for p in pipeline.walk_images(root)}
     catalogued = conn.execute(
         "SELECT id, path, content_hash, size_bytes, capture_time, camera_model "
-        "FROM images WHERE library_id=?", (library_id,)
+        "FROM images WHERE library_id=?",
+        (library_id,),
     ).fetchall()
     missing = [r for r in catalogued if r["path"] not in existing]
     if not missing:
@@ -208,7 +218,9 @@ def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) ->
             for r in missing:
                 h = r["content_hash"]
                 if h and h in disk_by_hash:
-                    conn.execute("UPDATE images SET path=? WHERE id=?", (disk_by_hash[h], int(r["id"])))
+                    conn.execute(
+                        "UPDATE images SET path=? WHERE id=?", (disk_by_hash[h], int(r["id"]))
+                    )
                     rehoused += 1
                     rehoused_ids.add(int(r["id"]))
                     used_disk.add(disk_by_hash[h])
@@ -267,13 +279,20 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
 
     def _run() -> None:
         INGEST_STATE.update(
-            running=True, folder=str(root), done=0, total=None, error=None,
-            removed=0, rehoused=0,
+            running=True,
+            folder=str(root),
+            done=0,
+            total=None,
+            error=None,
+            removed=0,
+            rehoused=0,
         )
         try:
             bg_conn = _conn()
             removed, rehoused = _reconcile_library(bg_conn, library_id, root)
-            INGEST_STATE.update(removed=removed, rehoused=rehoused, total=_count_supported_files(root))
+            INGEST_STATE.update(
+                removed=removed, rehoused=rehoused, total=_count_supported_files(root)
+            )
             for _ in pipeline.analyze_folder(root, models=model_list, library_id=library_id):
                 INGEST_STATE["done"] += 1
         except Exception as e:
@@ -297,7 +316,9 @@ class RunModelsRequest(BaseModel):
 
 
 @app.post("/api/libraries/{library_id}/run_models", dependencies=[Depends(require_local)])
-def run_library_models(library_id: int, req: RunModelsRequest, background: BackgroundTasks) -> dict[str, Any]:
+def run_library_models(
+    library_id: int, req: RunModelsRequest, background: BackgroundTasks
+) -> dict[str, Any]:
     conn = _conn()
     row = conn.execute("SELECT root_path FROM libraries WHERE id=?", (library_id,)).fetchone()
     if not row:
@@ -312,13 +333,17 @@ def run_library_models(library_id: int, req: RunModelsRequest, background: Backg
         total = _count_supported_files(root)
         INGEST_STATE.update(running=True, folder=str(root), done=0, total=total, error=None)
         try:
-            for _ in pipeline.analyze_folder(root, models=models, library_id=library_id, force=True):
+            for _ in pipeline.analyze_folder(
+                root, models=models, library_id=library_id, force=True
+            ):
                 INGEST_STATE["done"] += 1
             from datetime import datetime as _dt, timezone as _tz
+
             bg_conn = _conn()
             now = _dt.now(_tz.utc).isoformat()
             db.set_library_models(
-                bg_conn, library_id,
+                bg_conn,
+                library_id,
                 models_run={m: now for m in models},
                 models_pending=[],
             )
@@ -344,12 +369,24 @@ MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
     "subject_seg": {"url": f"{_REPO}/u2netp.mlpackage.zip", "filename": "u2netp.mlpackage"},
     "objects": {"url": f"{_REPO}/yolo26n.mlpackage.zip", "filename": "yolo26n.mlpackage"},
     "scene": {"url": f"{_REPO}/places365.mlpackage.zip", "filename": "places365.mlpackage"},
-    "depth": {"url": f"{_REPO}/depth_anything_v2_small.mlpackage.zip", "filename": "depth_anything_v2_small.mlpackage"},
-    "semantic": {"url": f"{_REPO}/mobileclip_s0_image.mlpackage.zip", "filename": "mobileclip_s0_image.mlpackage"},
+    "depth": {
+        "url": f"{_REPO}/depth_anything_v2_small.mlpackage.zip",
+        "filename": "depth_anything_v2_small.mlpackage",
+    },
+    "semantic": {
+        "url": f"{_REPO}/mobileclip_s0_image.mlpackage.zip",
+        "filename": "mobileclip_s0_image.mlpackage",
+    },
     # content_type uses Apple Vision (no download); intentionally absent here.
 }
 
-DOWNLOAD_STATE: dict[str, Any] = {"running": False, "model": None, "downloaded": 0, "total": None, "error": None}
+DOWNLOAD_STATE: dict[str, Any] = {
+    "running": False,
+    "model": None,
+    "downloaded": 0,
+    "total": None,
+    "error": None,
+}
 
 
 def _available_models() -> list[dict[str, Any]]:
@@ -357,7 +394,9 @@ def _available_models() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for name in _AVAILABLE_MODEL_NAMES:
         try:
-            mod = __import__(f"snapgrade.metrics.{_MODEL_MODULES.get(name, name)}", fromlist=["is_available"])
+            mod = __import__(
+                f"snapgrade.metrics.{_MODEL_MODULES.get(name, name)}", fromlist=["is_available"]
+            )
             avail = bool(mod.is_available())
         except Exception:
             avail = False
@@ -370,16 +409,20 @@ def list_available_models() -> dict[str, Any]:
     out = []
     for m in _available_models():
         info = MODEL_DOWNLOAD_URLS.get(m["name"], {})
-        out.append({
-            **m,
-            "download_url": info.get("url", ""),
-            "filename": info.get("filename", ""),
-        })
+        out.append(
+            {
+                **m,
+                "download_url": info.get("url", ""),
+                "filename": info.get("filename", ""),
+            }
+        )
     return {"models": out, "download_state": DOWNLOAD_STATE}
 
 
 @app.post("/api/models/{name}/download", dependencies=[Depends(require_local)])
-def download_model(name: str, background: BackgroundTasks, url: str | None = Query(None)) -> dict[str, Any]:
+def download_model(
+    name: str, background: BackgroundTasks, url: str | None = Query(None)
+) -> dict[str, Any]:
     if name not in _AVAILABLE_MODEL_NAMES:
         raise HTTPException(404, f"unknown model: {name}")
     info = MODEL_DOWNLOAD_URLS.get(name, {})
@@ -403,6 +446,7 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
     def _run() -> None:
         import urllib.request
         import zipfile
+
         # macOS Python installs frequently lack a usable system CA bundle, so
         # default urllib HTTPS fails with CERTIFICATE_VERIFY_FAILED. Use
         # certifi's bundle when available (mirrors what `curl` does).
@@ -410,6 +454,7 @@ def download_model(name: str, background: BackgroundTasks, url: str | None = Que
         try:
             import ssl
             import certifi
+
             ctx = ssl.create_default_context(cafile=certifi.where())
         except Exception:
             ctx = None
@@ -483,6 +528,7 @@ def semantic_search(
     are present yet (enable with SNAPGRADE_ENABLE_SEMANTIC=1 during analyze).
     """
     from . import search as _search
+
     conn = _conn()
     hits = _search.search(conn, q, k=k, library_id=library_id)
     if not hits:
@@ -490,7 +536,8 @@ def semantic_search(
     ids = [h[0] for h in hits]
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"SELECT id, path FROM images WHERE id IN ({placeholders})", ids,
+        f"SELECT id, path FROM images WHERE id IN ({placeholders})",
+        ids,
     ).fetchall()
     by_id = {int(r["id"]): r for r in rows}
     items = []
@@ -498,12 +545,14 @@ def semantic_search(
         r = by_id.get(image_id)
         if not r:
             continue
-        items.append({
-            "image_id": image_id,
-            "score": round(float(score), 4),
-            "path": r["path"],
-            "thumb": f"/api/images/{image_id}/thumb?size=256",
-        })
+        items.append(
+            {
+                "image_id": image_id,
+                "score": round(float(score), 4),
+                "path": r["path"],
+                "thumb": f"/api/images/{image_id}/thumb?size=256",
+            }
+        )
     return {"items": items, "q": q}
 
 
@@ -584,14 +633,18 @@ def list_images(
                 "label": r["label"],
                 "reasons": json.loads(r["reasons"]) if r["reasons"] else [],
                 "warnings": json.loads(r["warnings"]) if r["warnings"] else [],
-                "user_override": bool(r["user_override"]) if r["user_override"] is not None else False,
+                "user_override": bool(r["user_override"])
+                if r["user_override"] is not None
+                else False,
                 "burst_id": r["burst_id"],
                 "is_best": bool(r["is_best"]) if r["is_best"] is not None else False,
                 "library_id": int(r["library_id"]) if r["library_id"] is not None else None,
                 "content_type": r["content_type"],
                 "scene": r["scene"],
                 "sharpness": float(r["sharpness"]) if r["sharpness"] is not None else 0.0,
-                "aesthetic_score": float(r["aesthetic_score"]) if r["aesthetic_score"] is not None else None,
+                "aesthetic_score": float(r["aesthetic_score"])
+                if r["aesthetic_score"] is not None
+                else None,
                 "color": json.loads(r["color_json"]) if r["color_json"] else None,
                 "ocr": json.loads(r["ocr_json"]) if r["ocr_json"] else [],
                 "animals": json.loads(r["animals_json"]) if r["animals_json"] else [],
@@ -633,9 +686,7 @@ def _resolve_image_path(conn: sqlite3.Connection, image_id: int) -> tuple[Path, 
     POST /libraries/{id}/sync), so a missing file just returns 410 here and the
     user re-syncs to rebind.
     """
-    row = conn.execute(
-        "SELECT path, content_hash FROM images WHERE id = ?", (image_id,)
-    ).fetchone()
+    row = conn.execute("SELECT path, content_hash FROM images WHERE id = ?", (image_id,)).fetchone()
     if not row:
         return None
     path = Path(row["path"])
@@ -742,12 +793,7 @@ def reveal_in_finder(image_id: int) -> dict[str, Any]:
         exists = conn.execute("SELECT 1 FROM images WHERE id = ?", (image_id,)).fetchone()
         raise HTTPException(410 if exists else 404, "source file missing")
     path, _ = resolved
-    script = (
-        'tell application "Finder"\n'
-        f'  reveal POSIX file "{path}"\n'
-        "  activate\n"
-        "end tell"
-    )
+    script = f'tell application "Finder"\n  reveal POSIX file "{path}"\n  activate\nend tell'
     try:
         subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
     except FileNotFoundError:
@@ -759,6 +805,7 @@ def reveal_in_finder(image_id: int) -> dict[str, Any]:
 
 def _count_supported_files(root: Path) -> int:
     from . import decode
+
     n = 0
     for p in root.rglob("*"):
         if p.is_file() and decode.is_supported(p):
@@ -801,8 +848,13 @@ def ingest(background: BackgroundTasks, payload: IngestRequest) -> dict[str, Any
     def _run() -> None:
         grand_total = sum(_count_supported_files(fp) for fp in folder_paths)
         INGEST_STATE.update(
-            running=True, folder=None, done=0, total=grand_total, error=None,
-            folders_total=len(folder_paths), folders_done=0,
+            running=True,
+            folder=None,
+            done=0,
+            total=grand_total,
+            error=None,
+            folders_total=len(folder_paths),
+            folders_done=0,
         )
         errors: list[str] = []
         for fp, lib in zip(folder_paths, libraries):
@@ -813,10 +865,12 @@ def ingest(background: BackgroundTasks, payload: IngestRequest) -> dict[str, Any
                     INGEST_STATE["done"] += 1
                 if model_list:
                     from datetime import datetime as _dt, timezone as _tz
+
                     bg_conn = _conn()
                     now = _dt.now(_tz.utc).isoformat()
                     db.set_library_models(
-                        bg_conn, library_id,
+                        bg_conn,
+                        library_id,
                         models_run={m: now for m in model_list},
                         models_pending=[],
                     )
@@ -833,7 +887,9 @@ def ingest(background: BackgroundTasks, payload: IngestRequest) -> dict[str, Any
 
 
 @app.post("/api/group", dependencies=[Depends(require_local)])
-def regroup(hamming: int = 10, seconds: int = 3, library_id: int | None = Query(None)) -> dict[str, Any]:
+def regroup(
+    hamming: int = 10, seconds: int = 3, library_id: int | None = Query(None)
+) -> dict[str, Any]:
     conn = _conn()
     bursts = group.group_bursts(
         conn,
@@ -898,8 +954,13 @@ def faces_run(
 
     def _run() -> None:
         FACES_STATE.update(
-            running=True, stage="detect",
-            done=0, total=None, detected=0, clusters=0, error=None,
+            running=True,
+            stage="detect",
+            done=0,
+            total=None,
+            detected=0,
+            clusters=0,
+            error=None,
         )
 
         def _on_progress(done: int, total: int) -> None:
@@ -913,14 +974,18 @@ def faces_run(
                 if threshold is None
                 else face_cluster.FaceClusterConfig(similarity_threshold=threshold)
             )
-            FACES_STATE["detected"] = face_cluster.detect_and_store(conn, cfg, progress_cb=_on_progress)
+            FACES_STATE["detected"] = face_cluster.detect_and_store(
+                conn, cfg, progress_cb=_on_progress
+            )
             FACES_STATE["stage"] = "cluster"
             # Clustering itself is fast and atomic — flip to indeterminate.
             FACES_STATE["done"] = 0
             FACES_STATE["total"] = None
             if incremental:
                 res = face_cluster.cluster_incremental(conn, cfg)
-                FACES_STATE["clusters"] = int(res.get("assigned_existing", 0)) + int(res.get("new_clusters", 0))
+                FACES_STATE["clusters"] = int(res.get("assigned_existing", 0)) + int(
+                    res.get("new_clusters", 0)
+                )
             else:
                 FACES_STATE["clusters"] = int(face_cluster.cluster(conn, cfg))
             FACES_STATE["stage"] = "done"
@@ -937,12 +1002,15 @@ def faces_run(
 def faces_clusters(
     library_id: int | None = Query(None),
     thumbs_per: int = Query(12, ge=1, le=48),
-    min_size: int = Query(5, ge=1, le=1000, description="Hide clusters with fewer than N member images"),
+    min_size: int = Query(
+        5, ge=1, le=1000, description="Hide clusters with fewer than N member images"
+    ),
 ) -> dict[str, Any]:
     """Cluster reps + member-image samples. Powers the Faces tab."""
     conn = _conn()
     # Best (highest-quality) face per cluster — image_id + bbox for crop hints.
     from . import face_cluster
+
     best = face_cluster.best_faces_per_cluster(conn)
     if not best:
         return {"items": []}
@@ -970,21 +1038,25 @@ def faces_clusters(
             f"GROUP BY f.image_id ORDER BY q DESC NULLS LAST LIMIT ?",
             [*params, thumbs_per],
         ).fetchall()
-        items.append({
-            "id": int(cid),
-            "label": labels.get(int(cid)) or f"Cluster {cid}",
-            "named": int(cid) in labels,
-            "count": int(cnt),
-            "rep_image_id": int(rep["image_id"]),
-            "rep_thumb": f"/api/images/{int(rep['image_id'])}/thumb?size=256",
-            "thumbs": [
-                {"id": int(r["image_id"]),
-                 "image_id": int(r["image_id"]),
-                 "face_id": int(r["face_id"]),
-                 "url": f"/api/images/{int(r['image_id'])}/thumb?size=256"}
-                for r in rows
-            ],
-        })
+        items.append(
+            {
+                "id": int(cid),
+                "label": labels.get(int(cid)) or f"Cluster {cid}",
+                "named": int(cid) in labels,
+                "count": int(cnt),
+                "rep_image_id": int(rep["image_id"]),
+                "rep_thumb": f"/api/images/{int(rep['image_id'])}/thumb?size=256",
+                "thumbs": [
+                    {
+                        "id": int(r["image_id"]),
+                        "image_id": int(r["image_id"]),
+                        "face_id": int(r["face_id"]),
+                        "url": f"/api/images/{int(r['image_id'])}/thumb?size=256",
+                    }
+                    for r in rows
+                ],
+            }
+        )
     return {"items": items}
 
 
@@ -1006,6 +1078,7 @@ class FaceReassign(BaseModel):
 @app.post("/api/faces/clusters/{cluster_id}/label", dependencies=[Depends(require_local)])
 def label_cluster(cluster_id: int, payload: ClusterLabel) -> dict[str, Any]:
     from . import face_cluster
+
     conn = _conn()
     face_cluster.set_label(conn, cluster_id, payload.label)
     return {"ok": True, "cluster_id": cluster_id, "label": payload.label.strip()}
@@ -1014,6 +1087,7 @@ def label_cluster(cluster_id: int, payload: ClusterLabel) -> dict[str, Any]:
 @app.post("/api/faces/clusters/merge", dependencies=[Depends(require_local)])
 def merge_clusters_endpoint(payload: ClusterMerge) -> dict[str, Any]:
     from . import face_cluster
+
     conn = _conn()
     moved = face_cluster.merge_clusters(conn, payload.into, payload.from_)
     return {"ok": True, "into": payload.into, "from": payload.from_, "moved": moved}
@@ -1022,6 +1096,7 @@ def merge_clusters_endpoint(payload: ClusterMerge) -> dict[str, Any]:
 @app.post("/api/faces/{face_id}/cluster", dependencies=[Depends(require_local)])
 def reassign_face(face_id: int, payload: FaceReassign) -> dict[str, Any]:
     from . import face_cluster
+
     conn = _conn()
     if not face_cluster.set_face_cluster(conn, face_id, payload.cluster_id):
         raise HTTPException(404, f"face {face_id} not found")
@@ -1032,6 +1107,7 @@ def reassign_face(face_id: int, payload: FaceReassign) -> dict[str, Any]:
 def faces_preview(threshold: float = Query(..., ge=0.0, le=1.0)) -> dict[str, Any]:
     """Cluster count at a candidate threshold without persisting."""
     from . import face_cluster
+
     return face_cluster.preview_cluster_count(_conn(), threshold)
 
 
@@ -1039,10 +1115,12 @@ def faces_preview(threshold: float = Query(..., ge=0.0, le=1.0)) -> dict[str, An
 def faces_cluster_best(cluster_id: int) -> dict[str, Any]:
     """Highest-quality face in a single cluster — powers "best photo of X"."""
     from . import face_cluster
+
     conn = _conn()
     rep = face_cluster.best_photo_for_cluster(conn, cluster_id)
     if rep is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
     return {
         "cluster_id": int(cluster_id),
@@ -1077,7 +1155,9 @@ def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
     # Resolve scope. library_id wins over scope string.
     scope_root: Path | None = None
     if req.library_id is not None:
-        row = conn.execute("SELECT root_path, display_name FROM libraries WHERE id=?", (req.library_id,)).fetchone()
+        row = conn.execute(
+            "SELECT root_path, display_name FROM libraries WHERE id=?", (req.library_id,)
+        ).fetchone()
         if not row:
             raise HTTPException(404, "library not found")
         scope_root = Path(row["root_path"]).expanduser().resolve()
@@ -1096,7 +1176,9 @@ def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
         if scope_root is None:
             raise HTTPException(400, "in_place requires a library_id or scope")
         if req.apply and req.confirm != (lib_name or ""):
-            raise HTTPException(400, "in_place apply requires `confirm` to match the library/folder name")
+            raise HTTPException(
+                400, "in_place apply requires `confirm` to match the library/folder name"
+            )
         target_root = scope_root
     else:
         if not req.root:
@@ -1113,9 +1195,7 @@ def organize_endpoint(req: OrganizeRequest) -> dict[str, Any]:
         "conflicts": plan.conflicts,
         "written": written,
         "applied": req.apply,
-        "preview": [
-            {"source": str(e.source), "target": str(e.target)} for e in plan.entries[:50]
-        ],
+        "preview": [{"source": str(e.source), "target": str(e.target)} for e in plan.entries[:50]],
     }
 
 
@@ -1124,6 +1204,7 @@ class ThresholdsModel(BaseModel):
     sharp_reject: float = 0.30
     reject_closed_eyes: bool = True
     closed_eyes_min_ratio: float = 0.5
+    discount_occluded_eyes: bool = True
     accept_overexposed: bool = False
     accept_underexposed: bool = False
     accept_focus_on_background: bool = False
@@ -1144,7 +1225,9 @@ def reclassify(t: ThresholdsModel) -> dict[str, Any]:
         for r in rows:
             metrics = json.loads(r["json"])
             v = decide.decide(metrics, thresholds)
-            db.save_verdict(conn, int(r["image_id"]), v.verdict, v.stars, v.label, v.reasons, v.warnings)
+            db.save_verdict(
+                conn, int(r["image_id"]), v.verdict, v.stars, v.label, v.reasons, v.warnings
+            )
             updated += 1
     return {"updated": updated}
 
@@ -1173,6 +1256,7 @@ def write_xmp_endpoint(image_id: int) -> dict[str, Any]:
 if UI_DIR.exists():
     app.mount("/", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
 else:
+
     @app.get("/")
     def root() -> JSONResponse:
         return JSONResponse({"hint": "UI not built. Open the UI dir at ui/."})

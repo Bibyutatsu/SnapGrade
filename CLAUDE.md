@@ -41,6 +41,35 @@ Single source of truth: `~/.snapgrade/library.db` (SQLite, WAL). Files on disk a
 | Single-page React UI (Library / Triage / Bursts / Faces / XMP / Organize / Settings) | [ui/index.html](ui/index.html) + `ui/*.jsx` (tweaks-panel → sg-data → sg-ui → sg-triage → sg-screens → sg-app) | React 18 UMD + Babel-standalone in-browser; no build step. Load order matters (declared in index.html). |
 | CLI (Typer + Rich) | [snapgrade/cli.py](snapgrade/cli.py) | Commands: `analyze`, `show`, `write-xmp`, `group`, `tokens`, `organize`, `events`, `faces`, `report`, `serve`. |
 
+## All Models in SnapGrade
+
+### Face Detection & Recognition
+- **YuNet** (`metrics/subject.py`) — OpenCV full-scene face detector; finds all face sizes/angles. Does NOT handle sunglasses-as-closed-eyes distinction.
+- **MediaPipe FaceLandmarker** (`metrics/face_expression.py`) — 468-point landmarks + blendshapes (blink, smile, frown); includes HSV-based sunglasses occlusion check (lines 29–37) but cannot distinguish tinted lens from closed eyelid via landmarks alone.
+- **InsightFace `buffalo_s`** (`face_cluster.py`, optional Phase-4) — Face embeddings (512-d) for clustering; includes RetinaFace detector but no sunglasses/glasses attribute.
+
+### Scene & Object Detection
+- **YOLO26n** (`metrics/objects.py`) — COCO 80-class object detector (person, car, pet, etc.); unaffected by sunglasses.
+- **U²-Netp** (`metrics/subject_seg.py`, optional) — Salient subject segmentation; foreground/background mask.
+- **Places365 (MobileNetV2)** (`metrics/scene.py`, optional) — Scene classifier (365 categories: beach, indoor, office, etc.).
+- **Apple Vision Framework** (`metrics/vision.py`, macOS-only) — Saliency, document segmentation, OCR; built into OS.
+
+### Image Quality & Aesthetics
+- **HyperIQA** (`metrics/aesthetic.py`, optional) — Aesthetic score 1–10; ResNet50 + hyper-network (SRCC ~0.85 vs human).
+- **NIMA** (`metrics/aesthetic.py`, optional) — Aesthetic score fallback (SRCC ~0.65).
+- **Depth-Anything-V2-Small** (`metrics/depth.py`, optional) — Monocular depth; detects soft-foreground focus failures.
+
+### Semantic Search & Embeddings
+- **MobileCLIP-S0 (image)** (`metrics/embed.py`, optional) — 512-d image embeddings; Apple ANE-friendly CLIP variant.
+- **MobileCLIP-S0 (text)** (`search.py`, optional) — Encodes text queries for semantic search.
+
+### Classical (No Neural Network)
+- **Sharpness** — Laplacian + Tenengrad + FFT anisotropy; subject-focused via bbox.
+- **Exposure** — Histogram clipping + dynamic range.
+- **Noise** — Immerkær kernel (fast single-pass).
+- **Composition** — Hough edge detection + rule-of-thirds offset.
+- **Perceptual hashing** — pHash + dHash for burst grouping.
+
 ## Build & test
 
 - **Env**: `uv sync --all-extras`

@@ -26,6 +26,16 @@ RIGHT_EYE_LMS = (362, 385, 387, 263, 373, 380)
 CLOSED_BLEND_THRESHOLD = 0.50
 CLOSED_EAR_THRESHOLD = 0.20
 
+# Sunglasses / dark-lens occlusion (classical). A genuine blink shows a skin-toned
+# eyelid roughly as bright as the cheek; an opaque lens is dark, mostly-dark across
+# the socket, AND notably darker than the cheek below it. Tuned on real sunglasses
+# vs clear-glasses vs dark-scene faces — saturation proved useless (dark regions
+# carry noisy hue), so it's dropped. Bias: only flag when confident it's a lens.
+OCCL_VALUE_RATIO_MAX = 0.85  # eye_V / cheek_V below this = darker than skin (a dark-scene
+#                              closed eyelid sits ~1.0; only a lens drops the ratio)
+OCCL_ABS_VALUE_MAX = 90.0  # eye-region mean V (0..255) must be this dark in absolute terms
+OCCL_DARK_FRAC_MIN = 0.65  # fraction of eye-region pixels darker than OCCL_ABS_VALUE_MAX
+
 _LANDMARKER = None
 
 
@@ -47,6 +57,10 @@ class EyeReport:
     max_smile: float | None = None
     max_frown: float | None = None
     max_brow_down: float | None = None
+    # Dark-lens (sunglasses) occlusion — parallel to `ears`. A confidently
+    # occluded face is excluded from the closed-eye reject by `decide.py`.
+    occluded: tuple[bool, ...] = ()
+    occluded_count: int = 0
 
 
 def _landmarker():
@@ -79,11 +93,63 @@ def _ear(pts: np.ndarray) -> float:
     return float((v1 + v2) / (2.0 * horiz))
 
 
+def _eye_region_occluded(crop: np.ndarray, lms: np.ndarray) -> bool:
+    """Confident dark-lens (sunglasses) detection over the eye region.
+
+    Compares the eye region against a skin reference (cheek strip just below it):
+    an opaque lens is dark in absolute terms, mostly-dark across the socket, and
+    darker than the cheek, whereas a blinking eyelid is skin-toned and roughly as
+    bright as the cheek. All three gates must agree before we flag occlusion.
+    """
+    import cv2
+
+    h, w = crop.shape[:2]
+    if lms.shape[0] <= max(RIGHT_EYE_LMS):
+        return False
+    pts = lms[list(LEFT_EYE_LMS + RIGHT_EYE_LMS)]
+    x0, y0 = pts.min(axis=0)
+    x1, y1 = pts.max(axis=0)
+    rw, rh = x1 - x0, y1 - y0
+    if rw < 1 or rh < 1:
+        return False
+    # Lenses cover more than the eye aperture — pad the region generously.
+    px, py = rw * 0.15, rh * 0.6
+    ex0, ey0 = int(max(0, x0 - px)), int(max(0, y0 - py))
+    ex1, ey1 = int(min(w, x1 + px)), int(min(h, y1 + py))
+    eye = crop[ey0:ey1, ex0:ex1]
+    if eye.shape[0] < 8 or eye.shape[1] < 8:
+        return False
+
+    # Skin reference: a strip directly below the eye region (cheeks/nose).
+    cy0 = ey1
+    cy1 = int(min(h, ey1 + rh))
+    cheek = crop[cy0:cy1, ex0:ex1]
+    if cheek.shape[0] < 2 or cheek.shape[1] < 2:
+        cheek = crop  # degenerate crop — fall back to whole-face median
+
+    eye_hsv = cv2.cvtColor(np.ascontiguousarray(eye), cv2.COLOR_RGB2HSV)
+    cheek_hsv = cv2.cvtColor(np.ascontiguousarray(cheek), cv2.COLOR_RGB2HSV)
+    eye_v = float(eye_hsv[:, :, 2].mean())
+    cheek_v = float(cheek_hsv[:, :, 2].mean())
+    value_ratio = eye_v / max(cheek_v, 1.0)
+    dark_frac = float((eye_hsv[:, :, 2] < OCCL_ABS_VALUE_MAX).mean())
+
+    return (
+        value_ratio < OCCL_VALUE_RATIO_MAX
+        and eye_v < OCCL_ABS_VALUE_MAX
+        and dark_frac > OCCL_DARK_FRAC_MIN
+    )
+
+
 _EXPRESSION_KEYS = (
-    "eyeBlinkLeft", "eyeBlinkRight",
-    "mouthSmileLeft", "mouthSmileRight",
-    "mouthFrownLeft", "mouthFrownRight",
-    "browDownLeft", "browDownRight",
+    "eyeBlinkLeft",
+    "eyeBlinkRight",
+    "mouthSmileLeft",
+    "mouthSmileRight",
+    "mouthFrownLeft",
+    "mouthFrownRight",
+    "browDownLeft",
+    "browDownRight",
 )
 
 
@@ -127,7 +193,9 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
     # faces routinely false-positive on closed-eyes from MediaPipe at low res.
     faces = subject.primary_subjects(faces or [], rgb.shape)
     if not faces:
-        return EyeReport(faces=0, ears=(), blinks=(), min_ear=None, max_blink=None, any_closed=False)
+        return EyeReport(
+            faces=0, ears=(), blinks=(), min_ear=None, max_blink=None, any_closed=False
+        )
 
     lm = _landmarker()
     ears: list[float] = []
@@ -135,8 +203,10 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
     smiles: list[float] = []
     frowns: list[float] = []
     brows_down: list[float] = []
+    occluded_flags: list[bool] = []
     any_closed = False
     closed_count = 0
+    occluded_count = 0
 
     for face in faces:
         crop = _pad_crop(rgb, face.bbox, pad=0.4)
@@ -163,9 +233,13 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         frowns.append(max(bs["mouthFrownLeft"], bs["mouthFrownRight"]))
         brows_down.append(max(bs["browDownLeft"], bs["browDownRight"]))
 
+        occ = _eye_region_occluded(crop, lms)
+        occluded_flags.append(occ)
         if max(bl, br) >= CLOSED_BLEND_THRESHOLD or min(left, right) < CLOSED_EAR_THRESHOLD:
             any_closed = True
             closed_count += 1
+            if occ:
+                occluded_count += 1
 
     return EyeReport(
         faces=len(ears),
@@ -181,4 +255,6 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         max_smile=float(max(smiles)) if smiles else None,
         max_frown=float(max(frowns)) if frowns else None,
         max_brow_down=float(max(brows_down)) if brows_down else None,
+        occluded=tuple(occluded_flags),
+        occluded_count=occluded_count,
     )

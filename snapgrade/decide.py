@@ -33,6 +33,10 @@ class Thresholds:
     # scoring bounds, kept here so they're tunable alongside the other knobs.
     ear_closed: float = 0.20
     ear_open: float = 0.35
+    # Faces confidently wearing dark sunglasses are flagged by the analyzer as
+    # occluded; we subtract them from the closed-eye count so a lens is never
+    # mistaken for a blink. Set False to ignore the signal.
+    discount_occluded_eyes: bool = True
 
     # Composition
     horizon_warn_deg: float = 3.0  # surfaces a warning, never auto-rejects
@@ -44,7 +48,7 @@ class Thresholds:
     # for a face whose long edge is ~SOFT_FACE_REF_PX of the decoded long edge;
     # smaller faces carry less high-frequency detail, so the effective threshold
     # scales down with the face's rendered size (see _soft_face_threshold).
-    soft_face_lap_max: float = 50.0      # laplacian var below this on a reference face = soft
+    soft_face_lap_max: float = 50.0  # laplacian var below this on a reference face = soft
     motion_blur_anisotropy: float = 0.45  # FFT anisotropy above this = directional (motion) blur
 
     # Weights for the combined "quality" score used to assign stars.
@@ -57,15 +61,15 @@ class Thresholds:
 
 @dataclass
 class Verdict:
-    verdict: str            # keeper | review | reject
-    stars: int              # 0..5 (0 = reject, no rating)
-    label: str | None       # color label
+    verdict: str  # keeper | review | reject
+    stars: int  # 0..5 (0 = reject, no rating)
+    label: str | None  # color label
     reasons: list[str] = field(default_factory=list)
     # Informational flags that did NOT drive the verdict (horizon tilt, colour
     # cast). Kept separate from `reasons` so the UI can style them as advisories
     # rather than as problems that explain a downgrade.
     warnings: list[str] = field(default_factory=list)
-    score: float = 0.0      # 0..1 combined quality
+    score: float = 0.0  # 0..1 combined quality
 
 
 def _exposure_score(exposure: dict[str, Any]) -> float:
@@ -79,7 +83,9 @@ def _exposure_score(exposure: dict[str, Any]) -> float:
     return float(0.6 * mid_bonus + 0.4 * dr_bonus)
 
 
-def _eyes_score(eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float = 0.35) -> float | None:
+def _eyes_score(
+    eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float = 0.35
+) -> float | None:
     """Eye-openness in 0..1, or None when there's no usable signal.
 
     Returning None (no faces, or landmarks failed so min_ear is missing) lets the
@@ -89,7 +95,12 @@ def _eyes_score(eyes: dict[str, Any], ear_closed: float = 0.20, ear_open: float 
     if eyes.get("faces", 0) == 0:
         return None
     if eyes.get("any_closed"):
-        return 0.0
+        n_closed = eyes.get("closed_count")
+        n_occluded = eyes.get("occluded_count", 0) or 0
+        # A sunglasses-only "closed" frame shouldn't zero the eye term; fall
+        # through to EAR-band scoring. Genuine blinks still score 0.
+        if n_closed is None or max(0, n_closed - n_occluded) > 0:
+            return 0.0
     min_ear = eyes.get("min_ear")
     if min_ear is None:
         return None
@@ -118,7 +129,9 @@ def _soft_face_threshold(base: float, metrics: dict[str, Any]) -> float:
     relative to the reference fraction, clamped to a sane band.
     """
     decoded = metrics.get("decoded_size") or []
-    faces = [s for s in (metrics.get("subjects") or []) if s.get("kind") == "face" and s.get("bbox")]
+    faces = [
+        s for s in (metrics.get("subjects") or []) if s.get("kind") == "face" and s.get("bbox")
+    ]
     if len(decoded) != 2 or not faces:
         return base
     decoded_long = max(decoded) or 1
@@ -186,7 +199,8 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     aniso = ss.get("fft_anisotropy", 0.0)
     blur_angle = ss.get("blur_angle_deg")
     soft_face = (
-        face_subject and subject_sharp is not None
+        face_subject
+        and subject_sharp is not None
         and lap_val < _soft_face_threshold(t.soft_face_lap_max, metrics)
     )
     if aniso > t.motion_blur_anisotropy:
@@ -215,16 +229,24 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
     if t.reject_closed_eyes and eyes.get("any_closed"):
         n_faces = eyes.get("faces", 0) or 0
         n_closed = eyes.get("closed_count")
+        n_occluded = eyes.get("occluded_count", 0) or 0  # missing key → 0 → old behaviour
         if n_closed is None:  # pre-closed_count data: fall back to old behaviour
             reject_eyes = True
+            effective_closed = None
         else:
-            ratio = n_closed / n_faces if n_faces else 1.0
-            reject_eyes = n_faces <= 1 or ratio >= t.closed_eyes_min_ratio
+            effective_closed = n_closed - n_occluded if t.discount_occluded_eyes else n_closed
+            effective_closed = max(0, effective_closed)
+            if effective_closed == 0:  # every closed face is a dark lens — not a blink
+                reject_eyes = False
+            else:
+                ratio = effective_closed / n_faces if n_faces else 1.0
+                reject_eyes = n_faces <= 1 or ratio >= t.closed_eyes_min_ratio
         if reject_eyes:
             verdict = "reject"
-            reasons.append("eyes closed" if n_faces <= 1 else f"eyes closed ({n_closed}/{n_faces})")
-        else:
-            warnings.append(f"{eyes.get('closed_count')} of {n_faces} subjects blinking")
+            shown = effective_closed if effective_closed is not None else n_closed
+            reasons.append("eyes closed" if n_faces <= 1 else f"eyes closed ({shown}/{n_faces})")
+        elif effective_closed:
+            warnings.append(f"{effective_closed} of {n_faces} subjects blinking")
 
     if exposure.get("overexposed") and not t.accept_overexposed:
         if verdict == "keeper":
@@ -259,13 +281,14 @@ def decide(metrics: dict[str, Any], t: Thresholds | None = None) -> Verdict:
         stars = 1
 
     if verdict == "reject":
-        stars = 0                       # rejects carry no rating
+        stars = 0  # rejects carry no rating
     elif verdict == "keeper":
-        stars = max(stars, 3)           # a keeper is at least 3★
+        stars = max(stars, 3)  # a keeper is at least 3★
     else:  # review
         stars = max(2, min(stars, 4))
 
     label = {"keeper": "green", "review": "yellow", "reject": "red"}[verdict]
 
-    return Verdict(verdict=verdict, stars=stars, label=label,
-                   reasons=reasons, warnings=warnings, score=score)
+    return Verdict(
+        verdict=verdict, stars=stars, label=label, reasons=reasons, warnings=warnings, score=score
+    )
