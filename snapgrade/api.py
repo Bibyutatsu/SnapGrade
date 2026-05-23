@@ -308,6 +308,7 @@ def sync_library(library_id: int, background: BackgroundTasks) -> dict[str, Any]
 def remove_library(library_id: int) -> dict[str, Any]:
     conn = _conn()
     counts = db.delete_library(conn, library_id)
+    counts["thumbs_deleted"] = len(thumb.cleanup_orphans(conn))
     return {"removed": counts}
 
 

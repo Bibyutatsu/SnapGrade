@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from . import db, events, group, models, organize, pipeline, report, xmp
+from . import db, events, group, models, organize, pipeline, report, thumb, xmp
 
 app = typer.Typer(help="SnapGrade — local photo triage and organizer.")
 console = Console()
@@ -276,6 +276,37 @@ def setup_cmd(
     console.print(f"\nDone: [green]{ok} downloaded[/], {skipped} present, [red]{failed} failed[/].")
     if failed:
         raise typer.Exit(1)
+
+
+@app.command("gc-thumbs")
+def gc_thumbs_cmd(
+    db_path: Path = typer.Option(None, "--db", help="SQLite DB path"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="List files that would be deleted without deleting them"
+    ),
+) -> None:
+    """Clean up orphan thumbnails from the cache directory."""
+    conn = db.connect(db_path) if db_path else db.connect()
+    deleted = thumb.cleanup_orphans(conn, dry_run=dry_run)
+    if not deleted:
+        console.print("No orphan thumbnails found.")
+        return
+
+    total_size = sum(sz for _, sz in deleted)
+    size_mb = total_size / (1024 * 1024)
+
+    if dry_run:
+        console.print(
+            f"[yellow]Dry-run: {len(deleted)} orphan thumbnails would be deleted ({size_mb:.2f} MB):[/]"
+        )
+        for f, _ in deleted[:50]:
+            console.print(f"  {f}")
+        if len(deleted) > 50:
+            console.print(f"  ... and {len(deleted) - 50} more")
+    else:
+        console.print(
+            f"[green]Successfully deleted {len(deleted)} orphan thumbnails ({size_mb:.2f} MB).[/]"
+        )
 
 
 @app.command("serve")
