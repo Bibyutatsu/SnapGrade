@@ -24,7 +24,10 @@ from pydantic import BaseModel, Field
 from . import db, decide, group, models as db_models, organize, pipeline, thumb, xmp
 
 UI_DIR = Path(__file__).parent.parent / "ui"
-INGEST_STATE: dict[str, Any] = {"running": False, "folder": None, "done": 0, "total": None, "error": None}
+INGEST_STATE: dict[str, Any] = {
+    "running": False, "folder": None, "done": 0, "total": None, "error": None,
+    "folders_total": 0, "folders_done": 0,
+}
 FACES_STATE: dict[str, Any] = {
     "running": False, "stage": None,
     "done": 0, "total": None,
@@ -123,30 +126,36 @@ def stats() -> dict[str, Any]:
 
 
 @app.post("/api/select_folder", dependencies=[Depends(require_local)])
-async def select_folder() -> dict[str, str | None]:
+async def select_folder() -> dict[str, Any]:
     """macOS folder picker; AppleScript is forced to the front via System Events.
 
-    The dialog blocks until the user picks (potentially tens of seconds), so it
-    runs in a threadpool rather than tying up the event loop / a worker.
+    Allows multiple selections (⌘-click). Returns the chosen POSIX paths, newline-
+    joined from AppleScript and split here. The dialog blocks until the user picks
+    (potentially tens of seconds), so it runs in a threadpool rather than tying up
+    the event loop / a worker.
     """
     import subprocess
     script = (
         'tell application "System Events" to activate\n'
         'try\n'
-        '  set chosen to choose folder with prompt "Select photo folder"\n'
-        '  return POSIX path of chosen\n'
+        '  set chosen to choose folder with prompt "Select photo folder(s)" with multiple selections allowed\n'
+        '  set out to ""\n'
+        '  repeat with f in chosen\n'
+        '    set out to out & POSIX path of f & linefeed\n'
+        '  end repeat\n'
+        '  return out\n'
         'on error number -128\n'
         '  return ""\n'
         'end try'
     )
 
-    def _run_dialog() -> dict[str, str | None]:
+    def _run_dialog() -> dict[str, Any]:
         try:
             res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
-            path = res.stdout.strip()
-            return {"path": path or None}
+            paths = [p for p in res.stdout.splitlines() if p.strip()]
+            return {"paths": paths}
         except subprocess.CalledProcessError:
-            return {"path": None}
+            return {"paths": []}
         except FileNotFoundError:
             raise HTTPException(501, "Folder picker requires macOS (osascript)")
         except Exception as e:
@@ -757,47 +766,70 @@ def _count_supported_files(root: Path) -> int:
     return n
 
 
+class IngestRequest(BaseModel):
+    folders: list[str] = []
+    models: list[str] = []
+
+
 @app.post("/api/ingest", dependencies=[Depends(require_local)])
-def ingest(
-    background: BackgroundTasks,
-    folder: str = Query("", description="Folder path to ingest (required, non-empty)"),
-    models: str = Query("", description="Comma-separated model names to run"),
-) -> dict[str, Any]:
-    if not folder or not folder.strip():
-        raise HTTPException(400, "folder required")
-    folder_path = Path(folder.strip()).expanduser().resolve()
-    if not folder_path.is_dir():
-        raise HTTPException(400, "folder does not exist")
-    model_list = [m.strip() for m in models.split(",") if m.strip() in _AVAILABLE_MODEL_NAMES]
+def ingest(background: BackgroundTasks, payload: IngestRequest) -> dict[str, Any]:
+    """Ingest one or more folders. Each folder becomes its own library and the
+    folders are processed sequentially in a single background task — concurrent
+    ingests would trip the WAL DB-write lock (see `_claim_db_task`)."""
+    seen: set[str] = set()
+    folder_paths: list[Path] = []
+    for raw in payload.folders:
+        if not raw or not raw.strip():
+            continue
+        p = Path(raw.strip()).expanduser().resolve()
+        if p.is_dir() and str(p) not in seen:
+            seen.add(str(p))
+            folder_paths.append(p)
+    if not folder_paths:
+        raise HTTPException(400, "at least one existing folder required")
+    model_list = [m.strip() for m in payload.models if m.strip() in _AVAILABLE_MODEL_NAMES]
 
     _claim_db_task(INGEST_STATE)
     conn = _conn()
-    library_id = db.ensure_library(conn, str(folder_path))
-    if model_list:
-        db.set_library_models(conn, library_id, models_pending=model_list)
+    libraries: list[dict[str, Any]] = []
+    for fp in folder_paths:
+        lib_id = db.ensure_library(conn, str(fp))
+        if model_list:
+            db.set_library_models(conn, lib_id, models_pending=model_list)
+        libraries.append({"folder": str(fp), "library_id": lib_id})
 
     def _run() -> None:
-        total = _count_supported_files(folder_path)
-        INGEST_STATE.update(running=True, folder=str(folder_path), done=0, total=total, error=None)
-        try:
-            for _ in pipeline.analyze_folder(folder_path, models=model_list, library_id=library_id):
-                INGEST_STATE["done"] += 1
-            if model_list:
-                from datetime import datetime as _dt, timezone as _tz
-                bg_conn = _conn()
-                now = _dt.now(_tz.utc).isoformat()
-                db.set_library_models(
-                    bg_conn, library_id,
-                    models_run={m: now for m in model_list},
-                    models_pending=[],
-                )
-        except Exception as e:
-            INGEST_STATE["error"] = str(e)
-        finally:
-            INGEST_STATE["running"] = False
+        grand_total = sum(_count_supported_files(fp) for fp in folder_paths)
+        INGEST_STATE.update(
+            running=True, folder=None, done=0, total=grand_total, error=None,
+            folders_total=len(folder_paths), folders_done=0,
+        )
+        errors: list[str] = []
+        for fp, lib in zip(folder_paths, libraries):
+            library_id = lib["library_id"]
+            INGEST_STATE["folder"] = str(fp)
+            try:
+                for _ in pipeline.analyze_folder(fp, models=model_list, library_id=library_id):
+                    INGEST_STATE["done"] += 1
+                if model_list:
+                    from datetime import datetime as _dt, timezone as _tz
+                    bg_conn = _conn()
+                    now = _dt.now(_tz.utc).isoformat()
+                    db.set_library_models(
+                        bg_conn, library_id,
+                        models_run={m: now for m in model_list},
+                        models_pending=[],
+                    )
+            except Exception as e:
+                errors.append(f"{fp.name}: {e}")
+            finally:
+                INGEST_STATE["folders_done"] += 1
+        if errors:
+            INGEST_STATE["error"] = "; ".join(errors)
+        INGEST_STATE["running"] = False
 
     background.add_task(_run)
-    return {"started": True, "folder": str(folder_path), "library_id": library_id, "models": model_list}
+    return {"started": True, "libraries": libraries, "models": model_list}
 
 
 @app.post("/api/group", dependencies=[Depends(require_local)])

@@ -30,7 +30,7 @@ function LibraryFilterBar({ activeLib, setActiveLib, counts }) {
 // ── Library Screen ─────────────────────────────────────────────────────────
 function LibraryScreen({ stats, setTab }) {
   const { MOCK_LIBRARIES } = window.SG_DATA;
-  const [folder, setFolder] = useState('');
+  const [folders, setFolders] = useState([]);
   const [msg, setMsg]       = useState('');
   const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: false, objects: false, semantic: false });
   const [postSteps, setPostSteps] = useState({ group: true, faces: false });
@@ -79,8 +79,10 @@ function LibraryScreen({ stats, setTab }) {
   async function pickFolder() {
     setMsg('');
     try {
-      const path = await window.SG_API.pickFolder();
-      if (path) setFolder(path);
+      const picked = await window.SG_API.pickFolder();
+      if (picked && picked.length) {
+        setFolders(prev => [...prev, ...picked.filter(p => !prev.includes(p))]);
+      }
     } catch (e) { setMsg(`folder picker failed: ${e.message}`); }
   }
 
@@ -100,12 +102,13 @@ function LibraryScreen({ stats, setTab }) {
   }
 
   async function develop() {
-    if (!folder) return;
+    if (!folders.length) return;
     setMsg('');
     try {
       const models = Object.entries(enabled).filter(([, v]) => v).map(([k]) => k);
-      const r = await window.SG_API.ingest(folder, models);
-      setMsg(`ingest started for ${r.folder} (library #${r.library_id})`);
+      const r = await window.SG_API.ingest(folders, models);
+      const n = r.libraries?.length ?? folders.length;
+      setMsg(`ingest started for ${n} folder${n === 1 ? '' : 's'}`);
       if (postSteps.group || postSteps.faces) {
         await waitForIngestIdle();
         if (postSteps.group) {
@@ -268,13 +271,26 @@ function LibraryScreen({ stats, setTab }) {
         {/* Add another roll — secondary action, below the data. */}
         <div className="sg-card">
           <h2 className="sg-card-h2">Add another <em>roll</em>.</h2>
-          <div className="sg-card-sub">Ingest · scan · measure · catalogue</div>
+          <div className="sg-card-sub">Ingest · scan · measure · catalogue · multiple folders run in sequence</div>
+          {folders.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
+              {folders.map(f => (
+                <div key={f} className="sg-folder-display" style={{ display:'flex', alignItems:'center', gap:8, color:'var(--c-text)', fontStyle:'normal' }}>
+                  <span style={{ flex:1, wordBreak:'break-all' }}>{f}</span>
+                  <button
+                    onClick={() => setFolders(prev => prev.filter(p => p !== f))}
+                    title="Remove from queue"
+                    style={{ background:'none', border:'none', cursor:'pointer', color:'var(--c-mute)', fontSize:14, lineHeight:1, padding:'0 2px' }}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display:'flex', gap:10, alignItems:'stretch' }}>
-            <div className="sg-folder-display" style={{ flex:1, color: folder ? 'var(--c-text)' : 'var(--c-mute)', fontStyle: folder ? 'normal' : 'italic' }}>
-              {folder || 'no folder selected'}
+            <div className="sg-folder-display" style={{ flex:1, color:'var(--c-mute)', fontStyle:'italic' }}>
+              {folders.length ? `${folders.length} folder${folders.length === 1 ? '' : 's'} queued` : 'no folder selected'}
             </div>
             <Btn variant="ghost" onClick={pickFolder}>Choose folder…</Btn>
-            <Btn variant="primary" disabled={!folder} onClick={develop}>Develop</Btn>
+            <Btn variant="primary" disabled={!folders.length} onClick={develop}>Develop</Btn>
           </div>
           <div className="sg-model-checklist">
             <div className="sg-model-label">Optional models · weights in ~/.snapgrade/models/</div>

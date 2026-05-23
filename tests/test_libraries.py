@@ -65,11 +65,11 @@ def test_ingest_rejects_empty_folder(tmp_path, monkeypatch):
     from fastapi import BackgroundTasks
     from snapgrade import api as api_mod
 
-    for bad in ("", "   "):
+    for bad in ([], ["", "   "], ["/no/such/folder/xyz"]):
         with pytest.raises(HTTPException) as exc:
-            api_mod.ingest(BackgroundTasks(), folder=bad, models="")
+            api_mod.ingest(BackgroundTasks(), api_mod.IngestRequest(folders=bad))
         assert exc.value.status_code == 400
-        assert "folder required" in str(exc.value.detail)
+        assert "existing folder required" in str(exc.value.detail)
 
 
 def test_stats_includes_libraries_count(tmp_path, monkeypatch):

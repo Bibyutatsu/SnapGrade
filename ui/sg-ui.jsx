@@ -363,6 +363,11 @@ function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], acti
             return (
               <div style={{ marginTop: 10 }}>
                 <div className="sg-live"><span className="sg-live-dot" />Ingest running</div>
+                {(stats.ingest.folders_total || 0) > 1 && (
+                  <div className="sg-progress-label" style={{ marginBottom: 4 }}>
+                    <span>folder {Math.min((stats.ingest.folders_done || 0) + 1, stats.ingest.folders_total)} / {stats.ingest.folders_total}</span>
+                  </div>
+                )}
                 <div className="sg-progress-track">
                   {pct == null
                     ? <div className="sg-progress-indeterminate" />

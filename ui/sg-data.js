@@ -193,12 +193,10 @@
     },
     async pickFolder() {
       const r = await jpost('/api/select_folder');
-      return r.path || '';
+      return r.paths || [];
     },
-    ingest(folder, models) {
-      const qs = new URLSearchParams({ folder });
-      if (models && models.length) qs.set('models', models.join(','));
-      return jpost(`/api/ingest?${qs.toString()}`);
+    ingest(folders, models) {
+      return jpost('/api/ingest', { folders, models: models || [] });
     },
     syncLibrary(id) { return jpost(`/api/libraries/${id}/sync`); },
     removeLibrary(id) { return jdel(`/api/libraries/${id}`); },
