@@ -126,15 +126,32 @@ def detect_and_store(
 ) -> int:
     cfg = cfg or FaceClusterConfig()
     _ensure_schema(conn)
-    app = _app()
-    rows = conn.execute(
-        "SELECT i.id, i.path FROM images i "
+    rows_with_metrics = conn.execute(
+        "SELECT i.id, i.path, m.json FROM images i "
         "LEFT JOIN faces f ON f.image_id = i.id "
+        "LEFT JOIN metrics m ON m.image_id = i.id "
         "WHERE f.id IS NULL"
     ).fetchall()
+    
+    rows = []
+    for r in rows_with_metrics:
+        if not r["json"]:
+            continue
+        try:
+            met = json.loads(r["json"])
+            subjects = met.get("subjects", [])
+            if any(s.get("kind") == "face" for s in subjects):
+                rows.append(r)
+        except Exception:
+            pass
+
     total = len(rows)
-    if progress_cb is not None:
-        progress_cb(0, total)
+    if total == 0:
+        if progress_cb is not None:
+            progress_cb(0, 0)
+        return 0
+
+    app = _app()
     inserted = 0
     batch: list[tuple[int, str, bytes, float]] = []
 

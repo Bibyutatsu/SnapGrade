@@ -97,3 +97,58 @@ def test_set_library_models_merges_run(tmp_path, monkeypatch):
     libs = db.list_libraries(conn)
     assert libs[0]["models_run"] == {"scene": "2026-05-20", "objects": "2026-05-21"}
     assert libs[0]["models_pending"] == []
+
+
+def test_api_animal_merging(tmp_path, monkeypatch):
+    from snapgrade import api as api_mod, db
+
+    _fresh_db(tmp_path, monkeypatch)
+
+    conn = db.connect()
+    lib_id = db.ensure_library(conn, "/x/y")
+    img_id = db.upsert_image(
+        conn,
+        {"path": "/x/y/a.jpg", "size_bytes": 1, "mtime": 1.0, "library_id": lib_id},
+    )
+
+    # Save metrics with:
+    # 1. Existing animals list (e.g. detected by Apple Vision: dog)
+    # 2. YOLO objects detections (e.g. bird, car, and person)
+    db.save_metrics(conn, img_id, {
+        "animals": [{"species": "dog", "confidence": 0.8}],
+        "objects": {
+            "detections": [
+                {"class": "bird", "conf": 0.9, "bbox": [0, 0, 10, 10]},
+                {"class": "car", "conf": 0.8, "bbox": [10, 10, 20, 20]},
+                {"class": "dog", "conf": 0.7, "bbox": [20, 20, 30, 30]} # Duplicate, should not be duplicated
+            ]
+        }
+    })
+    db.save_verdict(conn, img_id, "keeper", 5, None, [])
+
+    # Test list_images
+    res = api_mod.list_images(
+        verdict=None,
+        burst=None,
+        folder=None,
+        library_id=None,
+        content_type=None,
+        limit=10,
+        offset=0
+    )
+    assert len(res["items"]) == 1
+    item = res["items"][0]
+
+    # Animals should contain both dog (original) and bird (from YOLO), but not duplicate dog, nor car (not an animal)
+    animals = item["animals"]
+    assert len(animals) == 2
+    species = {a["species"] for a in animals}
+    assert species == {"dog", "bird"}
+
+    # Test get_image
+    img_detail = api_mod.get_image(img_id)
+    detail_animals = img_detail["metrics"]["animals"]
+    assert len(detail_animals) == 2
+    detail_species = {a["species"] for a in detail_animals}
+    assert detail_species == {"dog", "bird"}
+

@@ -565,6 +565,20 @@ def list_folders() -> dict[str, Any]:
     return {"folders": [r["root_path"] for r in rows]}
 
 
+def _merge_yolo_animals(animals: list, objects_dets: list) -> list:
+    yolo_animals = {"bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"}
+    merged = list(animals or [])
+    for obj in (objects_dets or []):
+        if obj.get("class") in yolo_animals:
+            if not any(a.get("species") == obj["class"] for a in merged):
+                merged.append({
+                    "species": obj["class"],
+                    "confidence": obj.get("conf", 1.0),
+                    "bbox": obj.get("bbox"),
+                })
+    return merged
+
+
 @app.get("/api/images")
 def list_images(
     verdict: str | None = Query(None),
@@ -589,7 +603,8 @@ def list_images(
         "json_extract(m.json, '$.aesthetic_score') AS aesthetic_score, "
         "json_extract(m.json, '$.color') AS color_json, "
         "json_extract(m.json, '$.ocr') AS ocr_json, "
-        "json_extract(m.json, '$.animals') AS animals_json "
+        "json_extract(m.json, '$.animals') AS animals_json, "
+        "json_extract(m.json, '$.objects.detections') AS objects_json "
         "FROM images i "
         "LEFT JOIN verdicts v ON v.image_id = i.id "
         "LEFT JOIN metrics m ON m.image_id = i.id "
@@ -648,7 +663,10 @@ def list_images(
                 else None,
                 "color": json.loads(r["color_json"]) if r["color_json"] else None,
                 "ocr": json.loads(r["ocr_json"]) if r["ocr_json"] else [],
-                "animals": json.loads(r["animals_json"]) if r["animals_json"] else [],
+                "animals": _merge_yolo_animals(
+                    json.loads(r["animals_json"]) if r["animals_json"] else [],
+                    json.loads(r["objects_json"]) if r["objects_json"] else []
+                ),
                 "exposure_time": _fmt_exposure(r["exposure_time"]),
                 "lens": r["lens_model"],
             }
@@ -671,7 +689,13 @@ def get_image(image_id: int) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "image not found")
     out = {k: row[k] for k in row.keys() if k != "metrics_json"}
-    out["metrics"] = json.loads(row["metrics_json"]) if row["metrics_json"] else {}
+    metrics = json.loads(row["metrics_json"]) if row["metrics_json"] else {}
+    if metrics:
+        metrics["animals"] = _merge_yolo_animals(
+            metrics.get("animals"),
+            metrics.get("objects", {}).get("detections")
+        )
+    out["metrics"] = metrics
     out["reasons"] = json.loads(row["reasons"]) if row["reasons"] else []
     out["warnings"] = json.loads(row["warnings"]) if row["warnings"] else []
     return out

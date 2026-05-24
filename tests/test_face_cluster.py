@@ -166,3 +166,91 @@ def test_set_burst_best(tmp_path, monkeypatch):
     assert db.set_burst_best(conn, bid, 999999) is False
     best = conn.execute("SELECT image_id FROM burst_members WHERE burst_id=? AND is_best=1", (bid,)).fetchall()
     assert [r[0] for r in best] == [ids[2]]
+
+
+def test_detect_and_store_filtering(tmp_path, monkeypatch):
+    from snapgrade import db as db_mod
+    from snapgrade import face_cluster
+    from snapgrade import decode
+
+    dbp = tmp_path / "t.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB", dbp)
+    conn = db.connect(dbp)
+
+    lib = db.ensure_library(conn, "/b")
+
+    # 1. Image with face
+    img_face = db.upsert_image(conn, {"path": "/b/face.jpg", "size_bytes": 1, "mtime": 1.0, "library_id": lib})
+    db.save_metrics(conn, img_face, {
+        "subjects": [{"kind": "face", "bbox": [0, 0, 10, 10]}]
+    })
+
+    # 2. Image without face (scene)
+    img_scene = db.upsert_image(conn, {"path": "/b/scene.jpg", "size_bytes": 1, "mtime": 1.0, "library_id": lib})
+    db.save_metrics(conn, img_scene, {
+        "subjects": [{"kind": "saliency", "bbox": [0, 0, 10, 10]}]
+    })
+
+    # Mock _app() and decode.decode
+    class MockFace:
+        def __init__(self):
+            self.bbox = np.array([0, 0, 5, 5])
+            self.normed_embedding = np.ones(128, dtype=np.float32)
+            self.det_score = 0.9
+
+    class MockApp:
+        def __init__(self):
+            self.calls = []
+        def get(self, img_bgr):
+            self.calls.append(img_bgr)
+            return [MockFace()]
+
+    mock_app = MockApp()
+    monkeypatch.setattr(face_cluster, "_app", lambda: mock_app)
+
+    class MockDecoded:
+        def __init__(self):
+            self.rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(decode, "decode", lambda path, max_edge: MockDecoded())
+
+    # Run detect_and_store
+    n = face_cluster.detect_and_store(conn)
+
+    # Only face.jpg should have been processed, so n should be 1
+    assert n == 1
+    assert len(mock_app.calls) == 1
+
+    # Check that faces table has the face for img_face but not for img_scene
+    faces = conn.execute("SELECT image_id FROM faces").fetchall()
+    assert [r[0] for r in faces] == [img_face]
+
+
+def test_detect_and_store_lazy_app_loading(tmp_path, monkeypatch):
+    from snapgrade import db as db_mod
+    from snapgrade import face_cluster
+
+    dbp = tmp_path / "t.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB", dbp)
+    conn = db.connect(dbp)
+
+    lib = db.ensure_library(conn, "/b")
+
+    # Image without face
+    img_scene = db.upsert_image(conn, {"path": "/b/scene.jpg", "size_bytes": 1, "mtime": 1.0, "library_id": lib})
+    db.save_metrics(conn, img_scene, {
+        "subjects": [{"kind": "saliency", "bbox": [0, 0, 10, 10]}]
+    })
+
+    app_called = False
+    def mock_app_fn():
+        nonlocal app_called
+        app_called = True
+        raise RuntimeError("Should not be called")
+
+    monkeypatch.setattr(face_cluster, "_app", mock_app_fn)
+
+    n = face_cluster.detect_and_store(conn)
+    assert n == 0
+    assert not app_called
+
