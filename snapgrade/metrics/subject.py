@@ -200,15 +200,15 @@ def primary_subjects(
     # context (e.g. the whole crowd) rather than a single subject, so it's
     # only used when no face was detected — never to promote crowd faces.
     SALIENT_TIGHT_RATIO = 0.25
-    fg_regions: list[tuple[int, int, int, int]] = []
-    fg_fallback_regions: list[tuple[int, int, int, int]] = []
+    fg_regions: list[tuple[tuple[int, int, int, int], str]] = []
+    fg_fallback_regions: list[tuple[tuple[int, int, int, int], str]] = []
     if salient_bbox and len(salient_bbox) == 4:
         r = _person_bbox_to_xyxy(salient_bbox)
         area = max(0, r[2] - r[0]) * max(0, r[3] - r[1])
         if area / img_area <= SALIENT_TIGHT_RATIO:
-            fg_regions.append(r)
+            fg_regions.append((r, "saliency"))
         else:
-            fg_fallback_regions.append(r)
+            fg_fallback_regions.append((r, "saliency"))
     if person_bboxes:
         # Use only the largest person bbox; secondary people are background.
         sized = sorted(
@@ -217,7 +217,7 @@ def primary_subjects(
             reverse=True,
         )
         if sized:
-            fg_regions.append(sized[0])
+            fg_regions.append((sized[0], "person"))
 
     faces = [s for s in subjects if s.kind == "face"] if subjects else []
     if not faces:
@@ -228,10 +228,10 @@ def primary_subjects(
         # than nothing when no face is found.
         all_regions = fg_regions + fg_fallback_regions
         if all_regions:
-            r = max(all_regions, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+            r, kind = max(all_regions, key=lambda item: (item[0][2] - item[0][0]) * (item[0][3] - item[0][1]))
             return [Subject(
                 bbox=(r[0], r[1], r[2] - r[0], r[3] - r[1]),
-                kind="person",
+                kind=kind,
                 confidence=0.5,
             )]
         if subjects:
@@ -246,7 +246,7 @@ def primary_subjects(
     if fg_regions:
         inside = [
             f for f in faces
-            if any(_bbox_overlap_ratio(f.bbox, r) > 0.5 for r in fg_regions)
+            if any(_bbox_overlap_ratio(f.bbox, r) > 0.5 for r, _ in fg_regions)
         ]
         if inside:
             return inside

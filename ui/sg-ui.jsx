@@ -989,10 +989,11 @@ function Lightbox({ image, items, onClose, onVerdict, onPrev, onNext }) {
     return () => window.removeEventListener('keydown', handler);
   }, [onClose, onPrev, onNext, onVerdict, reset, zoomTo, maxScale, scale]);
 
-  // Fetch native-res pixels the first time the user zooms past fit, so detail is
-  // real instead of an upscaled 1600px preview. Loads once per frame.
   useEffect(() => {
-    if (scale > 1 && !hiRes && image) setHiRes(`${image.preview}?long_edge=6000`);
+    if (scale > 1 && !hiRes && image) {
+      const sep = image.preview.includes('?') ? '&' : '?';
+      setHiRes(`${image.preview}${sep}long_edge=6000`);
+    }
   }, [scale, hiRes, image]);
 
   // Native non-passive listener so preventDefault() can stop the page scrolling

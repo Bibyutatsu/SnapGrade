@@ -60,8 +60,9 @@
   // ── Shape adapters ──────────────────────────────────────────────────────────
   // API rows → the shape the prototype components expect.
   function shapeImage(r) {
-    const thumb   = `/api/images/${r.id}/thumb?size=420`;
-    const preview = `/api/images/${r.id}/preview`;
+    const bust = r.content_hash ? `&h=${r.content_hash.slice(-8)}` : '';
+    const thumb   = `/api/images/${r.id}/thumb?size=420${bust}`;
+    const preview = `/api/images/${r.id}/preview?h=${r.content_hash ? r.content_hash.slice(-8) : ''}`;
     return {
       id: r.id,
       path: r.path,
