@@ -109,6 +109,7 @@ function App() {
           libraries={window.SG_DATA.MOCK_LIBRARIES}
           activeLib={activeLib}
           setActiveLib={setActiveLib}
+          theme={t.theme}
         />
         <div style={{ display:'flex', flexDirection:'column', minWidth:0, height:'100vh', overflow:'hidden' }}>
           <TopBar

@@ -1,13 +1,12 @@
 <div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/banner_light.svg">
+    <img alt="SnapGrade Banner" src="docs/images/banner.svg" width="100%" />
+  </picture>
+</div>
 
-```text
-   _____                   ______                __  
-  / ___/____  ____ _____  / ____/________ ______/ /__
-  \__ \/ __ \/ __ `/ __ \/ / __/ ___/ __ `/ __  / _ \
- ___/ / / / / /_/ / /_/ / /_/ / /  / /_/ / /_/ /  __/
-/____/_/ /_/\__,_/ .___/\____/_/   \__,_/\__,_|\___/ 
-                /_/                                  
-```
+<div align="center">
 
 **Local, privacy-respecting photo triage and organizer.**
 

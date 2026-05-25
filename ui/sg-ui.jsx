@@ -295,21 +295,33 @@ function JobError({ kind, error }) {
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], activeLib, setActiveLib }) {
+function Sidebar({ tab, setTab, stats, collapsed, onToggle, libraries = [], activeLib, setActiveLib, theme }) {
   // The Triage library picker (formerly the standalone LibRail) folds into the
   // nav here: when on Triage and expanded, the libraries appear as indented
   // nav rows that drive `activeLib`, reclaiming a whole vertical strip.
   const libsAll = libraries.reduce((a, l) => a + (l.image_count || 0), 0);
   return (
-    <aside className="sg-sidebar" style={{ width: collapsed ? 56 : 220 }}>
+    <aside className="sg-sidebar" style={{ width: collapsed ? 56 : 220, padding: collapsed ? '24px 8px 20px' : '24px 20px 20px' }}>
       <button className="sg-collapse-btn" onClick={onToggle} title={collapsed ? 'Expand' : 'Collapse'}>
         {collapsed ? '›' : '‹'}
       </button>
-      {!collapsed && (
-        <>
-          <div className="sg-brand">Snap<em>·</em>Grade</div>
-          <div className="sg-brand-sub">A local culling apparatus</div>
-        </>
+      {collapsed ? (
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
+          <img
+            src={theme === 'light-pro' ? '/logo-light.svg' : '/logo-dark.svg'}
+            style={{ width: 28, height: 20 }}
+            alt="SnapGrade"
+          />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
+          <img
+            src={theme === 'light-pro' ? '/logo-light.svg' : '/logo-dark.svg'}
+            style={{ width: 36, height: 25, flexShrink: 0 }}
+            alt="SnapGrade"
+          />
+          <div className="sg-brand" style={{ padding: 0 }}>Snap<em>·</em><i>Grade</i></div>
+        </div>
       )}
       <nav className="sg-nav sg-scroll" style={{ overflowX: 'hidden' }}>
         {TABS.map(([k, label, short]) => (
