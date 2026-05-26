@@ -106,81 +106,13 @@ uv sync --all-extras
 ```bash
 uv run snapgrade --help
 ```
-
 ---
 
-## Model Weights
+## Documentation
 
-SnapGrade uses small, local model checkpoints. Run the setup command to fetch optional weights from the community host [`Bibyutatsu/macos-computer-vision-models`](https://github.com/Bibyutatsu/macos-computer-vision-models) or download them on demand from the **Library** screen in the web UI.
-
-```bash
-uv run snapgrade setup
-```
-
-| Model | Feature | Size | Obtained by |
-|---|---|---|---|
-| YuNet (ONNX) | Face detection | ~400 KB | **Auto** on first analyze |
-| MediaPipe FaceLandmarker | Blink / closed-eye (EAR) | ~2 MB | **Auto** on first analyze |
-| InsightFace `buffalo_s` | Face clustering & embedding | ~17 MB | **Auto** by InsightFace on first `faces` run |
-| U²-Netp (ONNX) | Salient subject segmentation | ~4.5 MB | `setup` / UI button |
-| YOLOv8n (CoreML) | Object detection & person bboxes | ~6 MB | `setup` / UI button |
-| HyperIQA (CoreML) | Enhanced aesthetic scoring | ~8 MB | `setup` / UI button |
-| MobileCLIP (ONNX) | Semantic search embeddings | ~25 MB | `setup` / UI button |
-| Places365 (CoreML) | Scene classification | ~20 MB | `setup` / UI button |
-| Subject segmentation (CoreML) | Precise framing masks | ~4 MB | `setup` / UI button |
-| Depth estimation (CoreML) | Depth map analysis | ~6 MB | `setup` / UI button |
-| screendoc (CoreML) | Document/Screenshot detection | ~3 MB | `setup` / UI button |
-
----
-
-## Quickstart
-
-```bash
-# Analyze a folder (recursively logs metrics to sqlite cache)
-uv run snapgrade analyze /path/to/photos
-
-# Group burst sequences
-uv run snapgrade group --hamming 10 --seconds 3
-
-# Start the web UI + API server
-uv run snapgrade serve
-# → Open http://127.0.0.1:8765 in your browser
-```
-
----
-
-## CLI Reference
-
-| Command | Description |
-|---|---|
-| `analyze <folder>` | Recursively analyze, compute metrics, and store in SQLite |
-| `show <folder>` | Print cached verdicts without re-analyzing |
-| `write-xmp <folder>` | Export XMP sidecars containing ratings/labels |
-| `group` | Group burst sequences by perceptual hash + timestamp |
-| `events` | Cluster images into shooting sessions by time gap |
-| `faces` | Cluster detected faces (requires `insightface`) |
-| `organize` | Restructure files using EXIF + quality template tokens |
-| `tokens` | List all available organizer tokens |
-| `report` | Generate static HTML contact sheet reports |
-| `serve` | Start the local FastAPI server and React UI |
-| `setup` | Download and verify all optional model weights |
-
----
-
-## Environment Variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `SNAPGRADE_MODELS_DIR` | `~/.snapgrade/models` | Override model cache directory |
-| `SNAPGRADE_YOLO_MODEL` | `~/.snapgrade/models/yolov8n.onnx` | Custom YOLOv8n path |
-| `SNAPGRADE_U2NETP_MODEL` | `~/.snapgrade/models/u2netp.onnx` | Custom U²-Netp path |
-| `SNAPGRADE_HYPERIQA_MODEL` | `~/.snapgrade/models/hyperiqa.mlpackage` | Path to HyperIQA aesthetic scoring model |
-| `SNAPGRADE_MOBILECLIP_MODEL` | `~/.snapgrade/models/mobileclip.onnx` | Path to MobileCLIP semantic embedding model |
-| `SNAPGRADE_DEPTH_MODEL` | `~/.snapgrade/models/depth.mlpackage` | Path to depth estimation model |
-| `SNAPGRADE_SUBJECT_SEG_MODEL` | `~/.snapgrade/models/subject_seg.mlpackage` | Path to subject segmentation model |
-| `SNAPGRADE_SCENE_MODEL` | `~/.snapgrade/models/places365.mlpackage` | Custom Places365 path |
-| `SNAPGRADE_SCREENDOC_MODEL` | `~/.snapgrade/models/screendoc.mlpackage` | Custom screenshot/document path |
-| `SNAPGRADE_ENABLE_SEMANTIC` | unset | Set to `1` to enable MobileCLIP embeddings indexing |
+For advanced setup, CLI usage, models registry, and configuration options, see:
+- [SnapGrade Complete Guide & Reference](docs/guide.md) — Comprehensive guide to CLI commands, models, quickstart, and environment variables
+- [Brand & UI Design System](docs/DESIGN.md) — UI theme colors and visual guidelines
 
 ---
 
