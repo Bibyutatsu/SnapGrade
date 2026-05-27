@@ -1,0 +1,104 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release macOS App
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install Dependencies
+        run: |
+          uv sync --all-extras
+          uv pip install pyinstaller
+          
+      - name: Build Sidecar Backend
+        run: |
+          uv run python build_sidecar.py
+          
+      - name: Build macOS App Bundle
+        run: |
+          uv run python build_app.py
+          
+      - name: Import Apple Certificates for Codesigning
+        if: env.APPLE_CODESIGN_CERTIFICATE != ''
+        env:
+          APPLE_CODESIGN_CERTIFICATE: ${{ secrets.APPLE_CODESIGN_CERTIFICATE }}
+          APPLE_CODESIGN_PASSWORD: ${{ secrets.APPLE_CODESIGN_PASSWORD }}
+          KEYCHAIN_PASSWORD: "temporary-keychain-pass"
+        run: |
+          # 1. Create a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          
+          # 2. Decode certificate and import
+          echo "$APPLE_CODESIGN_CERTIFICATE" | base64 --decode > certificate.p12
+          security import certificate.p12 -k build.keychain -P "$APPLE_CODESIGN_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          
+          # 3. Perform official Developer ID codesign
+          codesign --force --options runtime --deep --sign "Developer ID Application: Your Name (TeamID)" dist/SnapGrade.app
+          
+      - name: Install create-dmg
+        run: brew install create-dmg
+        
+      - name: Pack DMG
+        run: |
+          mkdir -p dist/dmg
+          cp -R dist/SnapGrade.app dist/dmg/
+          
+          create-dmg \
+            --volname "SnapGrade" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "SnapGrade.app" 175 120 \
+            --app-drop-link 425 120 \
+            "dist/SnapGrade-macOS.dmg" \
+            "dist/dmg/"
+            
+      - name: Notarize DMG (Apple Notary Service)
+        if: env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit dist/SnapGrade-macOS.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+            
+          # Staple the notarization ticket to the app inside the DMG
+          xcrun stapler staple dist/SnapGrade-macOS.dmg
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SnapGrade-macOS.dmg
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
