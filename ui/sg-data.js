@@ -199,6 +199,8 @@
     ingest(folders, models) {
       return jpost('/api/ingest', { folders, models: models || [] });
     },
+    listModels() { return jget('/api/models'); },
+    downloadModel(name) { return jpost(`/api/models/${name}/download`); },
     syncLibrary(id) { return jpost(`/api/libraries/${id}/sync`); },
     removeLibrary(id) { return jdel(`/api/libraries/${id}`); },
 

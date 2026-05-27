@@ -54,6 +54,56 @@ function LibraryScreen({ stats, setTab }) {
   };
   const [statsOpen, setStatsOpen] = useState(false);  // stats collapsed by default for returning users
   const [confirmRemove, setConfirmRemove] = useState(null);  // {id, name} pending removal
+  // Model availability — fetched once on mount and after each download completes.
+  const [modelStatus, setModelStatus] = useState(null);
+  const [downloadMsg, setDownloadMsg] = useState({});  // {name: 'downloading'|'done'|'error'}
+
+  useEffect(() => {
+    let alive = true;
+    async function fetchModels() {
+      try {
+        const r = await window.SG_API.listModels();
+        if (alive) setModelStatus(r.models || []);
+      } catch { /* backend not ready yet or API missing */ }
+    }
+    fetchModels();
+    return () => { alive = false; };
+  }, []);
+
+  async function downloadModel(name) {
+    if (downloadMsg[name] === 'downloading') return;
+    setDownloadMsg(m => ({ ...m, [name]: 'downloading' }));
+    try {
+      await window.SG_API.downloadModel(name);
+      // Poll until the model file is confirmed available on disk.
+      const poll = setInterval(async () => {
+        try {
+          const r = await window.SG_API.listModels();
+          const found = (r.models || []).find(x => x.name === name);
+          if (found?.available) {
+            clearInterval(poll);
+            setModelStatus(r.models || []);
+            setDownloadMsg(d => ({ ...d, [name]: 'done' }));
+          }
+        } catch { clearInterval(poll); setDownloadMsg(d => ({ ...d, [name]: 'error' })); }
+      }, 1500);
+      // Safety: stop polling after 10 min regardless
+      setTimeout(() => clearInterval(poll), 600_000);
+    } catch (e) {
+      setDownloadMsg(d => ({ ...d, [name]: 'error' }));
+    }
+  }
+
+  // Auto-download when checkbox is ticked and model is not yet cached.
+  function handleModelToggle(k, checked) {
+    setEnabled(s => ({ ...s, [k]: checked }));
+    if (checked && MODEL_INFO[k]?.download) {
+      const status = (modelStatus || []).find(m => m.name === k);
+      if (status && !status.available && !downloadMsg[k]) {
+        downloadModel(k);
+      }
+    }
+  }
 
   async function runSearch(qOverride) {
     const q = (qOverride ?? query).trim();
@@ -137,16 +187,29 @@ function LibraryScreen({ stats, setTab }) {
     catch (e) { setMsg(`remove failed: ${e.message}`); }
   }
 
-  // Reflects the real api.py MODEL_INFO + pipeline.py capabilities.
-  // content_type replaces the old screendoc CoreML model — uses Apple Vision,
-  // no download required.
+  // Human-readable labels/notes for known model names.
+  // The checklist iterates over the API response (modelStatus) — this map is
+  // only for display. Models the API knows about but not listed here fall back
+  // to their raw name and filename as label/note.
   const MODEL_INFO = {
-    scene:        { label: 'Scene classifier',       note: 'Places365 — adds {scene} organise token', download: true  },
-    subject_seg:  { label: 'Salient subject seg',    note: 'U²-Netp — better subject mask for sharpness', download: true  },
-    objects:      { label: 'Object detector',        note: 'YOLO26n — COCO classes, adds {object:class} token', download: true  },
-    content_type: { label: 'Screenshot / document',  note: 'Apple Vision — no download, runs on Neural Engine', download: false },
-    semantic:     { label: 'Semantic search index',   note: 'MobileCLIP-S0 — 512-d embedding per image, enables text search', download: true  },
+    scene:          { label: 'Scene classifier',       note: 'Places365 — adds {scene} organise token',                      download: true  },
+    subject_seg:    { label: 'Salient subject seg',    note: 'U²-Netp — better subject mask for sharpness',                  download: true  },
+    objects:        { label: 'Object detector',        note: 'YOLO26n — COCO classes, adds {object:class} token',            download: true  },
+    depth:          { label: 'Depth estimation',       note: 'Depth Anything V2 Small — per-pixel depth map',                download: true  },
+    content_type:   { label: 'Screenshot / document',  note: 'Apple Vision — no download, runs on Neural Engine',            download: false },
+    semantic:       { label: 'Semantic search index',  note: 'MobileCLIP-S0 — 512-d embedding per image, enables text search', download: true },
+    face_landmarker:{ label: 'Face landmarker',        note: 'MediaPipe — blink detection & expression scoring',             download: true  },
   };
+
+  // Merge: start from API models (source of truth for availability), then append
+  // any MODEL_INFO entries not returned by the API (e.g. content_type = built-in).
+  const apiNames = new Set((modelStatus || []).map(m => m.name));
+  const builtInRows = Object.entries(MODEL_INFO)
+    .filter(([k, v]) => !v.download && !apiNames.has(k))
+    .map(([k, v]) => ({ name: k, available: true, download_url: '', filename: '' }));
+  const allModelRows = [...(modelStatus || []), ...builtInRows];
+
+
 
   return (
     <div className="sg-scroll">
@@ -268,6 +331,7 @@ function LibraryScreen({ stats, setTab }) {
           </div>
         )}
 
+
         {/* Add another roll — secondary action, below the data. */}
         <div className="sg-card">
           <h2 className="sg-card-h2">Add another <em>roll</em>.</h2>
@@ -294,16 +358,50 @@ function LibraryScreen({ stats, setTab }) {
           </div>
           <div className="sg-model-checklist">
             <div className="sg-model-label">Optional models · weights in ~/.snapgrade/models/</div>
-            {Object.entries(MODEL_INFO).map(([k, info]) => (
-              <label key={k} style={{ display:'flex', alignItems:'center', gap:10, fontSize:12, color:'var(--c-text)', cursor:'pointer', padding:'3px 0' }}>
-                <input type="checkbox" checked={!!enabled[k]} onChange={e => setEnabled(s => ({ ...s, [k]: e.target.checked }))} style={{ accentColor:'var(--c-accent)' }} />
-                <span>{info.label}</span>
-                <span style={{ fontSize:10, color:'var(--c-mute)' }}>— {info.note}</span>
-                {!info.download && (
-                  <span style={{ fontSize:10, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-keeper)', marginLeft:'auto', padding:'2px 6px', border:'1px solid var(--c-keeper)', borderRadius:'var(--radius)' }}>built-in</span>
-                )}
-              </label>
-            ))}
+            {allModelRows.map(m => {
+              const k    = m.name;
+              const info = MODEL_INFO[k] || { label: k, note: m.filename || k, download: !!m.download_url };
+              const available = !info.download || m.available;
+              const dlState   = downloadMsg[k];
+              return (
+                <div key={k} style={{ display:'flex', alignItems:'center', gap:10, padding:'5px 0', borderBottom:'1px solid var(--c-border2)' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!enabled[k]}
+                    onChange={e => handleModelToggle(k, e.target.checked)}
+                    style={{ accentColor:'var(--c-accent)', flexShrink:0 }}
+                  />
+                  <label
+                    style={{ flex:1, fontSize:12, color:'var(--c-text)', cursor:'pointer', lineHeight:1.4 }}
+                    onClick={() => handleModelToggle(k, !enabled[k])}
+                  >
+                    <span style={{ fontWeight:600 }}>{info.label}</span>
+                    <span style={{ fontSize:10, color:'var(--c-mute)', marginLeft:8 }}>— {info.note}</span>
+                  </label>
+                  {!info.download ? (
+                    <span style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-keeper)', padding:'2px 6px', border:'1px solid var(--c-keeper)', borderRadius:'var(--radius)', flexShrink:0 }}>built-in</span>
+                  ) : available || dlState === 'done' ? (
+                    <span style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-keeper)', padding:'2px 6px', border:'1px solid var(--c-keeper)', borderRadius:'var(--radius)', flexShrink:0 }}>✓ cached</span>
+                  ) : dlState === 'downloading' ? (
+                    <span style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-amber)', padding:'2px 6px', flexShrink:0 }}>↓ loading…</span>
+                  ) : dlState === 'error' ? (
+                    <span style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-danger)', padding:'2px 6px', flexShrink:0 }}>failed</span>
+                  ) : (
+                    <span style={{ fontSize:9, letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--c-mute)', padding:'2px 6px', flexShrink:0 }}>↓ not cached</span>
+                  )}
+                  {info.download && (
+                    <Btn
+                      variant="ghost"
+                      disabled={dlState === 'downloading' || available || dlState === 'done'}
+                      style={{ fontSize:9, padding:'3px 10px', flexShrink:0 }}
+                      onClick={() => downloadModel(k)}
+                    >
+                      {dlState === 'downloading' ? '↓…' : dlState === 'error' ? 'Retry' : 'Download'}
+                    </Btn>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div className="sg-model-checklist" style={{ marginTop:10 }}>
             <div className="sg-model-label">After ingest · chained automatically</div>

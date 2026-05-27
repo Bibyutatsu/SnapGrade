@@ -11,7 +11,6 @@ struct SnapGradeApp: App {
                 .onAppear {
                     // Save reference to process manager in delegate so it can shut down on exit
                     appDelegate.processManager = processManager
-                    processManager.startBackend()
                 }
         }
         .windowStyle(.hiddenTitleBar)

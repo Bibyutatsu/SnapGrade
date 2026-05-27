@@ -37,6 +37,7 @@ OCCL_ABS_VALUE_MAX = 90.0  # eye-region mean V (0..255) must be this dark in abs
 OCCL_DARK_FRAC_MIN = 0.65  # fraction of eye-region pixels darker than OCCL_ABS_VALUE_MAX
 
 _LANDMARKER = None
+_LANDMARKER_UNAVAILABLE = False  # set True on first load failure so we stop retrying
 
 
 @dataclass(frozen=True)
@@ -64,22 +65,49 @@ class EyeReport:
 
 
 def _landmarker():
-    global _LANDMARKER
+    """Return the FaceLandmarker instance, or None if MediaPipe native lib is unavailable.
+
+    The PyInstaller bundle may not include ``mediapipe.tasks.c / libmediapipe.dylib``.
+    Rather than crashing every image analysis with ImportError, we record the failure
+    once and return None so callers can skip the blink/expression pass gracefully.
+    Also returns None (without downloading) if face_landmarker.task is absent — the
+    download is ~25 MB and would block the analysis thread pool on first launch.
+    """
+    global _LANDMARKER, _LANDMARKER_UNAVAILABLE
+    if _LANDMARKER_UNAVAILABLE:
+        return None
     if _LANDMARKER is None:
-        from mediapipe.tasks import python as mp_python
-        from mediapipe.tasks.python import vision as mp_vision
+        try:
+            from .. import models
+            # Don't block the thread pool with a download: only load if already cached.
+            if not models.is_present("face_landmarker"):
+                import logging
+                logging.getLogger(__name__).info(
+                    "face_landmarker.task not cached — skipping blink detection "
+                    "(run `snapgrade setup` or download from Settings to enable)"
+                )
+                _LANDMARKER_UNAVAILABLE = True
+                return None
 
-        from .. import models
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision as mp_vision
 
-        path = models.ensure("face_landmarker")
-        options = mp_vision.FaceLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=str(path)),
-            running_mode=mp_vision.RunningMode.IMAGE,
-            num_faces=1,
-            output_face_blendshapes=True,
-            output_facial_transformation_matrixes=False,
-        )
-        _LANDMARKER = mp_vision.FaceLandmarker.create_from_options(options)
+            path = models.ensure("face_landmarker")
+            options = mp_vision.FaceLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=str(path)),
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_faces=1,
+                output_face_blendshapes=True,
+                output_facial_transformation_matrixes=False,
+            )
+            _LANDMARKER = mp_vision.FaceLandmarker.create_from_options(options)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "MediaPipe FaceLandmarker unavailable (blink/expression skipped): %s", exc
+            )
+            _LANDMARKER_UNAVAILABLE = True
+            return None
     return _LANDMARKER
 
 
@@ -198,6 +226,13 @@ def measure(rgb: np.ndarray, faces: list[subject.Subject] | None = None) -> EyeR
         )
 
     lm = _landmarker()
+    if lm is None:
+        # MediaPipe native lib unavailable (e.g. inside PyInstaller bundle).
+        # Return a neutral EyeReport so other metrics still run.
+        return EyeReport(
+            faces=len(faces), ears=(), blinks=(), min_ear=None,
+            max_blink=None, any_closed=False,
+        )
     ears: list[float] = []
     blinks: list[tuple[float, float]] = []
     smiles: list[float] = []

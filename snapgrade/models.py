@@ -112,9 +112,9 @@ _REGISTRY = {
 }
 
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
-# YuNet + face_landmarker auto-download on first analyze, so they're excluded.
+# FaceLandmarker and YuNet are added here so they are downloaded during first setup.
 OPTIONAL_MODELS = (
-    "u2netp_coreml", "yolo26n_coreml", "yunet_coreml", "depth_coreml",
+    "u2netp_coreml", "yolo26n_coreml", "yunet", "face_landmarker", "depth_coreml",
     "hyperiqa", "topiq", "nima", "places365", "places365_labels",
     "mobileclip_image", "mobileclip_text",
 )

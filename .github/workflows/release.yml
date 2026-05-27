@@ -75,7 +75,7 @@ jobs:
             --icon-size 100 \
             --icon "SnapGrade.app" 175 120 \
             --app-drop-link 425 120 \
-            "dist/SnapGrade-macOS.dmg" \
+            "dist/SnapGrade-${{ github.ref_name }}.dmg" \
             "dist/dmg/"
             
       - name: Notarize DMG (Apple Notary Service)
@@ -85,19 +85,19 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit dist/SnapGrade-macOS.dmg \
+          xcrun notarytool submit dist/SnapGrade-${{ github.ref_name }}.dmg \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
             
           # Staple the notarization ticket to the app inside the DMG
-          xcrun stapler staple dist/SnapGrade-macOS.dmg
+          xcrun stapler staple dist/SnapGrade-${{ github.ref_name }}.dmg
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/SnapGrade-macOS.dmg
+          files: dist/SnapGrade-${{ github.ref_name }}.dmg
           draft: true
           prerelease: false
         env:
