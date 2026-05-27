@@ -77,8 +77,8 @@ We have set up an automated release workflow in [.github/workflows/release.yml](
 ### Release Flow
 When you push a version tag to GitHub:
 ```bash
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 The workflow automatically:
 1. Checks out the codebase.

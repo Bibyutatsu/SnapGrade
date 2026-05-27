@@ -43,7 +43,7 @@ FACES_STATE: dict[str, Any] = {
     "error": None,
 }
 
-app = FastAPI(title="SnapGrade", version="0.1.2")
+app = FastAPI(title="SnapGrade", version="0.1.3")
 
 # Loopback-only app: the only legitimate caller is the same-origin UI. Pinning
 # CORS to the local origins (instead of "*") means a browser will refuse the
