@@ -203,6 +203,7 @@
     downloadModel(name) { return jpost(`/api/models/${name}/download`); },
     syncLibrary(id) { return jpost(`/api/libraries/${id}/sync`); },
     removeLibrary(id) { return jdel(`/api/libraries/${id}`); },
+    loadLibraryErrors(id) { return jget(`/api/libraries/${id}/errors`); },
 
     verdict(id, payload) { return jpost(`/api/images/${id}/verdict`, payload); },
     verdictBatch(imageIds, payload) { return jpost('/api/verdicts', { image_ids: imageIds, ...payload }); },
@@ -261,7 +262,7 @@
     try { return JSON.parse(localStorage.getItem('sg.prefs') || '{}'); }
     catch { return {}; }
   }
-  window.SG_PREFS = { faceMinSize: 5, faceThreshold: 0.30, ...loadPrefs() };
+  window.SG_PREFS = { faceMinSize: 2, faceThreshold: 0.30, ...loadPrefs() };
   window.SG_API.savePrefs = (patch) => {
     window.SG_PREFS = { ...window.SG_PREFS, ...patch };
     localStorage.setItem('sg.prefs', JSON.stringify(window.SG_PREFS));

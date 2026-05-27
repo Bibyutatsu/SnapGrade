@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS cluster_labels (
     label TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Stores failed image import/ingest paths and traceback errors.
+CREATE TABLE IF NOT EXISTS ingest_errors (
+    id INTEGER PRIMARY KEY,
+    library_id INTEGER REFERENCES libraries(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    error TEXT NOT NULL,
+    failed_at TEXT NOT NULL
+);
 """
 
 
@@ -201,7 +210,8 @@ def ensure_library(conn: sqlite3.Connection, root_path: str, display_name: str |
 def list_libraries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT l.id, l.root_path, l.display_name, l.added_at, l.models_run, l.models_pending, "
-        "  (SELECT COUNT(*) FROM images i WHERE i.library_id = l.id) AS image_count "
+        "  (SELECT COUNT(*) FROM images i WHERE i.library_id = l.id) AS image_count, "
+        "  (SELECT COUNT(*) FROM ingest_errors ie WHERE ie.library_id = l.id) AS error_count "
         "FROM libraries l ORDER BY l.added_at DESC, l.id DESC"
     ).fetchall()
     out: list[dict[str, Any]] = []
@@ -220,12 +230,33 @@ def list_libraries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "display_name": r["display_name"],
                 "added_at": r["added_at"],
                 "image_count": int(r["image_count"]),
+                "error_count": int(r["error_count"]),
                 "by_verdict": by_verdict,
                 "models_run": json.loads(r["models_run"]) if r["models_run"] else {},
                 "models_pending": json.loads(r["models_pending"]) if r["models_pending"] else [],
             }
         )
     return out
+
+
+def add_ingest_error(conn: sqlite3.Connection, library_id: int, path: str, error: str) -> None:
+    from datetime import datetime as _dt, timezone as _tz
+    conn.execute(
+        "INSERT INTO ingest_errors(library_id, path, error, failed_at) VALUES(?, ?, ?, ?)",
+        (library_id, path, error, _dt.now(_tz.utc).isoformat()),
+    )
+
+
+def get_ingest_errors(conn: sqlite3.Connection, library_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT path, error, failed_at FROM ingest_errors WHERE library_id = ? ORDER BY id DESC",
+        (library_id,),
+    ).fetchall()
+    return [{"path": r["path"], "error": r["error"], "failed_at": r["failed_at"]} for r in rows]
+
+
+def clear_ingest_errors(conn: sqlite3.Connection, library_id: int) -> None:
+    conn.execute("DELETE FROM ingest_errors WHERE library_id = ?", (library_id,))
 
 
 def delete_library(conn: sqlite3.Connection, library_id: int) -> dict[str, int]:

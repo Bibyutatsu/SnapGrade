@@ -404,6 +404,9 @@ def analyze_folder(
     conn = db.connect(db_path) if db_path else db.connect()
     if library_id is None:
         library_id = db.ensure_library(conn, str(root))
+    
+    # Clear previous import errors for this library before analyzing
+    db.clear_ingest_errors(conn, library_id)
 
     pending: list[tuple[Path, os.stat_result]] = []
     for p in walk_images(root):
@@ -438,6 +441,7 @@ def analyze_folder(
                 yield r
             except Exception as e:
                 log.exception("Failed to analyze %s: %s", p, e)
+                db.add_ingest_error(conn, library_id, str(p), str(e))
         _flush()
         return
 
@@ -486,6 +490,7 @@ def analyze_folder(
                     yield r
                 except Exception as e:
                     log.exception("Failed to analyze %s: %s", p, e)
+                    db.add_ingest_error(conn, library_id, str(p), str(e))
                 _submit_next()
                 break
     _flush()

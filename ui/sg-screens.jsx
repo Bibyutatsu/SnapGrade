@@ -54,6 +54,25 @@ function LibraryScreen({ stats, setTab }) {
   };
   const [statsOpen, setStatsOpen] = useState(false);  // stats collapsed by default for returning users
   const [confirmRemove, setConfirmRemove] = useState(null);  // {id, name} pending removal
+  
+  // State for ingestion errors modal
+  const [activeErrorLib, setActiveErrorLib] = useState(null);  // { id, name }
+  const [errorList, setErrorList] = useState([]);
+  const [errorLoading, setErrorLoading] = useState(false);
+
+  const showErrorsForLibrary = async (id, name) => {
+    setActiveErrorLib({ id, name });
+    setErrorLoading(true);
+    try {
+      const r = await window.SG_API.loadLibraryErrors(id);
+      setErrorList(r.errors || []);
+    } catch (e) {
+      setErrorList([{ path: 'Error loading', error: e.message }]);
+    } finally {
+      setErrorLoading(false);
+    }
+  };
+
   // Model availability — fetched once on mount and after each download completes.
   const [modelStatus, setModelStatus] = useState(null);
   const [downloadMsg, setDownloadMsg] = useState({});  // {name: 'downloading'|'done'|'error'}
@@ -273,11 +292,16 @@ function LibraryScreen({ stats, setTab }) {
                   <div style={{ flex:1 }}>
                     <div style={{ fontWeight:600, fontSize:15, color:'var(--c-text)', marginBottom:2 }}>{lib.display_name}</div>
                     <div style={{ fontSize:10, color:'var(--c-mute)', marginBottom:8, wordBreak:'break-all' }}>{lib.root_path}</div>
-                    <div style={{ display:'flex', gap:18, fontSize:11, color:'var(--c-text2)' }}>
+                    <div style={{ display:'flex', gap:18, fontSize:11, color:'var(--c-text2)', flexWrap:'wrap' }}>
                       <span><b style={{ color:'var(--c-text)', fontVariantNumeric:'tabular-nums' }}>{lib.image_count}</b> frames</span>
                       <span style={{ color:'var(--c-keeper)' }}><b>{v.keeper||0}</b> keep</span>
                       <span style={{ color:'var(--c-amber)' }}><b>{v.review||0}</b> review</span>
                       <span style={{ color:'var(--c-danger)' }}><b>{v.reject||0}</b> reject</span>
+                      {lib.error_count > 0 && (
+                        <span style={{ color:'var(--c-danger)', cursor:'pointer', textDecoration:'underline' }} onClick={() => showErrorsForLibrary(lib.id, lib.display_name || lib.root_path)}>
+                          <b>{lib.error_count}</b> failed
+                        </span>
+                      )}
                     </div>
                     <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
                       {Object.keys(lib.models_run || {}).map(m => (
@@ -428,6 +452,40 @@ function LibraryScreen({ stats, setTab }) {
         onCancel={() => setConfirmRemove(null)}
         body={confirmRemove && <>Remove <b style={{ color:'var(--c-text)' }}>{confirmRemove.name}</b> from the catalogue? The analysis records are dropped, but the photos on disk stay put.</>}
       />
+
+      {activeErrorLib && (
+        <div className="sg-modal-backdrop" style={{ display:'flex', position:'fixed', inset:0, zIndex:1000, background:'rgba(0,0,0,0.6)', alignItems:'center', justifyContent:'center' }}>
+          <div className="sg-modal" style={{ background:'var(--c-bg)', border:'1px solid var(--c-border)', padding:24, width:640, maxWidth:'90%', maxHeight:'80%', display:'flex', flexDirection:'column', borderRadius:'var(--radius)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
+              <h3 style={{ margin:0, fontSize:16, fontWeight:600, color:'var(--c-text)' }}>
+                Ingestion Errors — {activeErrorLib.name}
+              </h3>
+              <button onClick={() => setActiveErrorLib(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--c-mute)', fontSize:18 }}>×</button>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', fontSize:12, display:'flex', flexDirection:'column', gap:10, paddingRight:6 }} className="sg-scroll">
+              {errorLoading ? (
+                <EmptyState>Loading error list…</EmptyState>
+              ) : errorList.length === 0 ? (
+                <EmptyState>No errors recorded for this library.</EmptyState>
+              ) : (
+                errorList.map((err, i) => (
+                  <div key={i} style={{ padding:'10px 14px', border:'1px solid var(--c-border2)', borderRadius:'var(--radius)', background:'var(--c-panel)' }}>
+                    <div style={{ fontWeight:600, color:'var(--c-text)', wordBreak:'break-all', marginBottom:4 }}>
+                      {err.path}
+                    </div>
+                    <div style={{ color:'var(--c-danger)', fontFamily:'var(--font-mono)', fontSize:11, whiteSpace:'pre-wrap' }}>
+                      {err.error}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', marginTop:16 }}>
+              <Btn variant="ghost" onClick={() => setActiveErrorLib(null)}>Close</Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

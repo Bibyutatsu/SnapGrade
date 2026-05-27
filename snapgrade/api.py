@@ -180,6 +180,13 @@ def list_libraries_endpoint() -> dict[str, Any]:
     return {"items": items, "available_models": _available_models()}
 
 
+@app.get("/api/libraries/{library_id}/errors")
+def get_library_errors(library_id: int) -> dict[str, Any]:
+    conn = _conn()
+    errors = db.get_ingest_errors(conn, library_id)
+    return {"errors": errors}
+
+
 def _reconcile_library(conn: sqlite3.Connection, library_id: int, root: Path) -> tuple[int, int]:
     """Reconcile DB paths with disk, in a single transaction. Returns (removed, rehoused).
 
@@ -1028,7 +1035,7 @@ def faces_clusters(
     library_id: int | None = Query(None),
     thumbs_per: int = Query(12, ge=1, le=48),
     min_size: int = Query(
-        5, ge=1, le=1000, description="Hide clusters with fewer than N member images"
+        2, ge=1, le=1000, description="Hide clusters with fewer than N member images"
     ),
 ) -> dict[str, Any]:
     """Cluster reps + member-image samples. Powers the Faces tab."""
