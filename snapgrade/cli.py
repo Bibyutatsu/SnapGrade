@@ -317,8 +317,13 @@ def serve(
 ) -> None:
     """Run the FastAPI backend + UI."""
     import uvicorn
+    from snapgrade.api import app as api_app
 
-    uvicorn.run("snapgrade.api:app", host=host, port=port, reload=reload)
+    if reload:
+        uvicorn.run("snapgrade.api:app", host=host, port=port, reload=True)
+    else:
+        uvicorn.run(api_app, host=host, port=port)
+
 
 
 if __name__ == "__main__":
