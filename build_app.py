@@ -4,6 +4,72 @@ import subprocess
 import sys
 from pathlib import Path
 
+def build_app_icon(svg_path: Path, icns_path: Path):
+    print("Generating macOS app icon from SVG logo on black background...")
+    try:
+        from AppKit import NSImage, NSSize, NSBitmapImageRep, NSPNGFileType, NSGraphicsContext, NSColor, NSMakeRect, NSRectFill
+        
+        img = NSImage.alloc().initWithContentsOfFile_(str(svg_path))
+        if img is None:
+            print(f"Warning: Failed to load SVG file at {svg_path}")
+            return False
+            
+        iconset_dir = svg_path.parent / "AppIcon.iconset"
+        if iconset_dir.exists():
+            shutil.rmtree(iconset_dir)
+        iconset_dir.mkdir(exist_ok=True)
+        
+        # macOS standard sizes for iconsets
+        sizes = [
+            (16, "icon_16x16.png"),
+            (32, "icon_16x16@2x.png"),
+            (32, "icon_32x32.png"),
+            (64, "icon_32x32@2x.png"),
+            (128, "icon_128x128.png"),
+            (256, "icon_128x128@2x.png"),
+            (256, "icon_256x256.png"),
+            (512, "icon_256x256@2x.png"),
+            (512, "icon_512x512.png"),
+            (1024, "icon_512x512@2x.png")
+        ]
+        
+        for size_px, name in sizes:
+            rep = NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+                None, size_px, size_px, 8, 4, True, False, "NSCalibratedRGBColorSpace", 0, 0
+            )
+            
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.setCurrentContext_(NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep))
+            
+            # Fill with solid black background
+            NSColor.blackColor().set()
+            NSRectFill(NSMakeRect(0, 0, size_px, size_px))
+            
+            # Draw SVG image on top with a slight margin (10%) for native spacing
+            margin = int(size_px * 0.1)
+            inner_size = size_px - 2 * margin
+            
+            img.drawInRect_fromRect_operation_fraction_(
+                NSMakeRect(margin, margin, inner_size, inner_size),
+                NSMakeRect(0, 0, img.size().width, img.size().height),
+                2, # NSCompositingOperationSourceOver
+                1.0
+            )
+            
+            NSGraphicsContext.restoreGraphicsState()
+            
+            png_data = rep.representationUsingType_properties_(NSPNGFileType, None)
+            png_data.writeToFile_atomically_(str(iconset_dir / name), True)
+            
+        # Run iconutil to compile PNG set to .icns file
+        subprocess.run(["iconutil", "-c", "icns", str(iconset_dir), "-o", str(icns_path)], check=True)
+        shutil.rmtree(iconset_dir)
+        print(f"AppIcon.icns generated successfully at {icns_path}")
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to generate AppIcon.icns due to error: {e}")
+        return False
+
 def build_mac_app():
     print("Building SnapGrade.app bundle...")
     workspace = Path(__file__).parent.resolve()
@@ -62,7 +128,14 @@ def build_mac_app():
     print("Copying sidecar backend into Resources...")
     shutil.copytree(sidecar_src, resources_dir / "snapgrade_backend")
     
-    # 4. Create Info.plist
+    # 4. Generate AppIcon
+    logo_svg = workspace / "docs" / "images" / "logos" / "Dark_theme.svg"
+    if logo_svg.exists():
+        build_app_icon(logo_svg, resources_dir / "AppIcon.icns")
+    else:
+        print(f"Warning: Logo SVG not found at {logo_svg}. Application icon will be skipped.")
+    
+    # 5. Create Info.plist
     info_plist_content = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -71,6 +144,8 @@ def build_mac_app():
     <string>English</string>
     <key>CFBundleExecutable</key>
     <string>SnapGrade</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.snapgrade.SnapGrade</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -95,11 +170,11 @@ def build_mac_app():
     with (contents_dir / "Info.plist").open("w") as f:
         f.write(info_plist_content)
         
-    # 5. Create PkgInfo
+    # 6. Create PkgInfo
     with (contents_dir / "PkgInfo").open("w") as f:
         f.write("APPL????")
         
-    # 6. Codesign the bundle (required for ARM64 macOS)
+    # 7. Codesign the bundle (required for ARM64 macOS)
     print("Ad-hoc codesigning the app bundle...")
     codesign_cmd = [
         "codesign",
