@@ -49,12 +49,35 @@ def build_app_icon(svg_path: Path, icns_path: Path):
             margin = int(size_px * 0.1)
             inner_size = size_px - 2 * margin
             
+            # Calculate aspect ratio to avoid stretching/distorting the logo
+            orig_w = img.size().width
+            orig_h = img.size().height
+            
+            if orig_h > 0 and orig_w > 0:
+                aspect = orig_w / orig_h
+                if aspect > 1.0: # Landscape
+                    draw_w = inner_size
+                    draw_h = inner_size / aspect
+                    draw_x = margin
+                    draw_y = margin + (inner_size - draw_h) / 2
+                else: # Portrait or Square
+                    draw_h = inner_size
+                    draw_w = inner_size * aspect
+                    draw_y = margin
+                    draw_x = margin + (inner_size - draw_w) / 2
+            else:
+                draw_w = inner_size
+                draw_h = inner_size
+                draw_x = margin
+                draw_y = margin
+                
             img.drawInRect_fromRect_operation_fraction_(
-                NSMakeRect(margin, margin, inner_size, inner_size),
-                NSMakeRect(0, 0, img.size().width, img.size().height),
+                NSMakeRect(draw_x, draw_y, draw_w, draw_h),
+                NSMakeRect(0, 0, orig_w, orig_h),
                 2, # NSCompositingOperationSourceOver
                 1.0
             )
+
             
             NSGraphicsContext.restoreGraphicsState()
             
