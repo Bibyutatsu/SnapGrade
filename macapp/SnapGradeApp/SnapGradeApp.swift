@@ -16,6 +16,13 @@ struct SnapGradeApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Install Command Line Tool...") {
+                    CommandLineInstaller.install()
+                }
+            }
+        }
     }
 }
 
