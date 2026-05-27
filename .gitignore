@@ -220,3 +220,7 @@ __marimo__/
 
 /Images
 /Trash
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store

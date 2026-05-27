@@ -108,6 +108,12 @@ uv run snapgrade --help
 ```
 ---
 
+## macOS Standalone Desktop App
+
+SnapGrade can be compiled as a native standalone macOS desktop app bundle (`dist/SnapGrade.app`). For local compilation, `.dmg` packaging, and CI/CD release automation details, see the [macOS Desktop App Guide](docs/macos_desktop.md).
+
+---
+
 ## Documentation
 
 For advanced setup, CLI usage, models registry, and configuration options, see:
