@@ -1,6 +1,23 @@
-# macOS Standalone Desktop App Compilation & Release Guide
+# macOS Standalone Desktop App — Compilation & Release Guide
 
 SnapGrade can be packaged and run as a native standalone macOS desktop app bundle (`dist/SnapGrade.app`). It spawns the Python backend in a sidecar process and embeds the React UI in a Cocoa `WKWebView` window.
+
+---
+
+## Quick Install (Pre-built)
+
+> **[⬇ Download SnapGrade-macOS.dmg (v0.1.3)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.1.3/SnapGrade-macOS.dmg)**
+
+No Python, `uv`, or Xcode required.
+
+1. Open the `.dmg` and drag **SnapGrade** into your **Applications** folder.
+2. Launch **SnapGrade** from Applications (right-click → Open on first run to bypass Gatekeeper).
+3. To use the `snapgrade` CLI globally, open the app menu: **SnapGrade → Install Command Line Tool…**
+
+> [!NOTE]
+> CoreML models are downloaded to `~/.snapgrade/` on first use. The app bundles the full backend sidecar — no separate Python installation needed.
+
+All releases and changelogs: [github.com/Bibyutatsu/SnapGrade/releases](https://github.com/Bibyutatsu/SnapGrade/releases)
 
 ---
 
