@@ -14,9 +14,9 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.3-orange.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)](pyproject.toml)
 [![Astral UV](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Download macOS App](https://img.shields.io/badge/Download-macOS%20App%20v0.1.3-blue?logo=apple&logoColor=white)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.1.3/SnapGrade-macOS.dmg)
+[![Download macOS App](https://img.shields.io/badge/Download-macOS%20App%20v0.2.0-blue?logo=apple&logoColor=white)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.2.0/SnapGrade-macOS.dmg)
 
 <br/>
 <img src="docs/images/triage.png" alt="SnapGrade Contact Sheet" width="90%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);" />
@@ -111,7 +111,7 @@ uv run snapgrade --help
 
 ## macOS Standalone Desktop App
 
-> **[⬇ Download SnapGrade-macOS.dmg (v0.1.3)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.1.3/SnapGrade-macOS.dmg)**  
+> **[⬇ Download SnapGrade-macOS.dmg (v0.2.0)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.2.0/SnapGrade-macOS.dmg)**  
 > No Python or `uv` required — open the `.dmg`, drag **SnapGrade** to Applications, then launch it.
 
 The app bundles the full Python backend as a sidecar binary and serves the web UI locally. On first launch, use **SnapGrade → Install Command Line Tool…** from the menu bar to make the `snapgrade` CLI available globally in your terminal.

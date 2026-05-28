@@ -6,7 +6,7 @@ SnapGrade can be packaged and run as a native standalone macOS desktop app bundl
 
 ## Quick Install (Pre-built)
 
-> **[⬇ Download SnapGrade-macOS.dmg (v0.1.3)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.1.3/SnapGrade-macOS.dmg)**
+> **[⬇ Download SnapGrade-macOS.dmg (v0.2.0)](https://github.com/Bibyutatsu/SnapGrade/releases/download/v0.2.0/SnapGrade-macOS.dmg)**
 
 No Python, `uv`, or Xcode required.
 
@@ -94,8 +94,8 @@ We have set up an automated release workflow in [.github/workflows/release.yml](
 ### Release Flow
 When you push a version tag to GitHub:
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.2.0
+git push origin v0.2.0
 ```
 The workflow automatically:
 1. Checks out the codebase.
