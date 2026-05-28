@@ -21,7 +21,7 @@ struct WebView: NSViewRepresentable {
         webView.magnification = 1.0
         
         // Load target URL
-        let request = URLRequest(url: url)
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         webView.load(request)
         
         return webView

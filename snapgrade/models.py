@@ -61,6 +61,7 @@ def _verify(name: str, artifact: Path) -> None:
             f"Refusing to load a tampered or corrupted artifact ({artifact.name})."
         )
 
+
 # Community model host. Override the whole base with SNAPGRADE_MODELS_REPO
 # (e.g. a fork or a local mirror) without touching individual entries.
 MODELS_REPO_RAW = os.environ.get(
@@ -79,14 +80,14 @@ _REGISTRY = {
     # cv2.FaceDetectorYN (ONNX) — switching the runtime needs a Python
     # implementation of YuNet's 12-head anchor decode + NMS, tracked separately.
     "yunet_coreml": ("yunet.mlpackage", f"{MODELS_REPO_RAW}/yunet.mlpackage.zip"),
-    "face_landmarker": (
-        "face_landmarker.task",
-        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-    ),
+    "face_landmarker": ("face_landmarker.task", f"{MODELS_REPO_RAW}/face_landmarker.task"),
     # CoreML variants (ANE-accelerated on Apple Silicon).
     "u2netp_coreml": ("u2netp.mlpackage", f"{MODELS_REPO_RAW}/u2netp.mlpackage.zip"),
     "yolo26n_coreml": ("yolo26n.mlpackage", f"{MODELS_REPO_RAW}/yolo26n.mlpackage.zip"),
-    "depth_coreml": ("depth_anything_v2_small.mlpackage", f"{MODELS_REPO_RAW}/depth_anything_v2_small.mlpackage.zip"),
+    "depth_coreml": (
+        "depth_anything_v2_small.mlpackage",
+        f"{MODELS_REPO_RAW}/depth_anything_v2_small.mlpackage.zip",
+    ),
     # ONNX fallbacks (kept for back-compat with existing installs).
     "u2netp": ("u2netp.onnx", f"{MODELS_REPO_RAW}/u2netp.onnx"),
     "yolo26n": ("yolo26n.onnx", f"{MODELS_REPO_RAW}/yolo26n.onnx"),
@@ -114,9 +115,18 @@ _REGISTRY = {
 # Optional models a fresh install can pull in one shot (`snapgrade setup`).
 # FaceLandmarker and YuNet are added here so they are downloaded during first setup.
 OPTIONAL_MODELS = (
-    "u2netp_coreml", "yolo26n_coreml", "yunet", "face_landmarker", "depth_coreml",
-    "hyperiqa", "topiq", "nima", "places365", "places365_labels",
-    "mobileclip_image", "mobileclip_text",
+    "u2netp_coreml",
+    "yolo26n_coreml",
+    "yunet",
+    "face_landmarker",
+    "depth_coreml",
+    "hyperiqa",
+    "topiq",
+    "nima",
+    "places365",
+    "places365_labels",
+    "mobileclip_image",
+    "mobileclip_text",
 )
 
 
@@ -136,7 +146,7 @@ def ensure(name: str) -> Path:
     if target.exists() and (target.is_dir() or target.stat().st_size > 0):
         return target
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     if url.endswith(".zip"):
         zip_target = MODELS_DIR / f"{filename}.zip"
         tmp = zip_target.with_suffix(".part")
@@ -146,6 +156,7 @@ def ensure(name: str) -> Path:
         _verify(name, zip_target)
 
         import zipfile
+
         with zipfile.ZipFile(zip_target, "r") as zip_ref:
             zip_ref.extractall(MODELS_DIR)
         zip_target.unlink()
@@ -180,6 +191,7 @@ def load_coreml(path: Path | str) -> Any:
     if not _COREML_LOGGED:
         _COREML_LOGGED = True
         import logging
+
         logging.getLogger("snapgrade").info(
             "CoreML backend ready (compute_units=%s); ANE used when available.", sel
         )

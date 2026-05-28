@@ -11,6 +11,7 @@ def build():
     ui_dir = workspace / "ui"
     mp_site = workspace / ".venv/lib/python3.12/site-packages/mediapipe"
     mp_dylib = mp_site / "tasks/c/libmediapipe.dylib"
+    insightface_objects = workspace / ".venv/lib/python3.12/site-packages/insightface/data/objects"
     
     # Build command
     cmd = [
@@ -21,6 +22,7 @@ def build():
         "--noconfirm",
         f"--add-data={ui_dir}:ui",
         f"--add-data={workspace}/snapgrade/models_manifest.json:snapgrade",
+        f"--add-data={insightface_objects}:insightface/data/objects",
         # Bundle libmediapipe.dylib so mediapipe.tasks.c can load it via importlib.resources.
         # --add-binary puts it on the dyld path; --add-data puts it where ctypes.CDLL loads it.
         f"--add-binary={mp_dylib}:mediapipe/tasks/c",
@@ -49,6 +51,7 @@ def build():
         "--hidden-import=insightface.app",
         "--hidden-import=insightface.model_zoo",
         "--hidden-import=coremltools.models.model",
+        "--hidden-import=onnx",
         "--hidden-import=onnxruntime",
         "--hidden-import=mediapipe",
         "--hidden-import=mediapipe.tasks",

@@ -32,7 +32,7 @@ function LibraryScreen({ stats, setTab }) {
   const { MOCK_LIBRARIES } = window.SG_DATA;
   const [folders, setFolders] = useState([]);
   const [msg, setMsg]       = useState('');
-  const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: true, objects: true, semantic: true, depth: true });
+  const [enabled, setEnabled] = useState({ content_type: true, scene: true, subject_seg: true, objects: true, semantic: true, depth: true, face_landmarker: true });
   const [postSteps, setPostSteps] = useState({ group: true, faces: true });
   const [query, setQuery]   = useState('');
   const [results, setResults] = useState(null);  // null = no search yet, [] = empty results
@@ -82,7 +82,18 @@ function LibraryScreen({ stats, setTab }) {
     async function fetchModels() {
       try {
         const r = await window.SG_API.listModels();
-        if (alive) setModelStatus(r.models || []);
+        if (alive) {
+          setModelStatus(r.models || []);
+          setEnabled(prev => {
+            const next = { ...prev };
+            (r.models || []).forEach(m => {
+              if (next[m.name] === undefined) {
+                next[m.name] = true;
+              }
+            });
+            return next;
+          });
+        }
       } catch { /* backend not ready yet or API missing */ }
     }
     fetchModels();

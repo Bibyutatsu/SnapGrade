@@ -34,7 +34,17 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import db, decide, decode, exif
-from .metrics import aesthetic, color, composition, exposure, face_expression, noise, phash, sharpness, subject
+from .metrics import (
+    aesthetic,
+    color,
+    composition,
+    exposure,
+    face_expression,
+    noise,
+    phash,
+    sharpness,
+    subject,
+)
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +117,9 @@ def _live_photo_video(path: Path) -> Path | None:
     return None
 
 
-def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = None) -> AnalysisResult:
+def analyze_one(
+    path: Path, max_edge: int = 2000, models: list[str] | None = None
+) -> AnalysisResult:
     t0 = time.perf_counter()
     img = decode.decode(path, max_edge=max_edge)
     t_decode = time.perf_counter() - t0
@@ -116,7 +128,12 @@ def analyze_one(path: Path, max_edge: int = 2000, models: list[str] | None = Non
     ex = exif.read_exif(path)
     ch = _content_hash(path)
     return _analyze_from_decoded(
-        path, img, models=models, t_decode=t_decode, exif_record=ex, content_hash=ch,
+        path,
+        img,
+        models=models,
+        t_decode=t_decode,
+        exif_record=ex,
+        content_hash=ch,
     )
 
 
@@ -150,18 +167,21 @@ def _analyze_from_decoded(
     if "subject_seg" in enabled:
         try:
             from .metrics import subject_seg as _ss
+
             extra["subject_seg"] = _ss.analyze(rgb)
         except Exception as e:  # pragma: no cover
             extra["subject_seg_error"] = str(e)
     if "objects" in enabled:
         try:
             from .metrics import objects as _obj
+
             extra["objects"] = _obj.analyze(rgb)
         except Exception as e:  # pragma: no cover
             extra["objects_error"] = str(e)
     if "depth" in enabled:
         try:
             from .metrics import depth as _depth
+
             extra["depth"] = _depth.analyze(rgb)
         except Exception as e:  # pragma: no cover
             extra["depth_error"] = str(e)
@@ -175,19 +195,31 @@ def _analyze_from_decoded(
             if d.get("class") == "person" and d.get("bbox"):
                 person_bboxes.append(d["bbox"])
     primaries = subject.primary_subjects(
-        subjects, rgb.shape,
+        subjects,
+        rgb.shape,
         salient_bbox=salient_bbox,
         person_bboxes=person_bboxes or None,
     )
 
     # MediaPipe blendshape pass — the one piece that must be serialized.
-    with _ML_LOCK:
-        eye_report = face_expression.measure(rgb, faces=primaries)
+    if models is None or "face_landmarker" in enabled:
+        with _ML_LOCK:
+            eye_report = face_expression.measure(rgb, faces=primaries)
+    else:
+        eye_report = face_expression.EyeReport(
+            faces=len(primaries),
+            ears=(),
+            blinks=(),
+            min_ear=None,
+            max_blink=None,
+            any_closed=False,
+        )
 
     aesthetic_score, aesthetic_source = aesthetic.score(rgb)
     if "scene" in enabled:
         try:
             from .metrics import scene as _scene
+
             extra["scene"] = _scene.analyze(rgb)
         except Exception as e:  # pragma: no cover - opt-in
             extra["scene_error"] = str(e)
@@ -199,6 +231,7 @@ def _analyze_from_decoded(
     # Back-compat: "screendoc" is an alias for the old screendoc model.
     # "no_content_type" remains an explicit kill-switch.
     from .metrics import vision as _vis
+
     want_content = (
         "no_content_type" not in enabled
         and _vis.is_available()
@@ -217,15 +250,20 @@ def _analyze_from_decoded(
             if has_camera and not want_ocr_always:
                 extra["ocr"] = []
                 extra["content_type"] = {
-                    "class": "photo", "conf": 0.95, "source": "exif_fastpath",
+                    "class": "photo",
+                    "conf": 0.95,
+                    "source": "exif_fastpath",
                     "has_camera": True,
                 }
             else:
                 ocr_regions = _vis.recognize_text(rgb)
                 extra["ocr"] = ocr_regions
                 from .metrics import content_type as _ct
+
                 extra["content_type"] = _ct.analyze(
-                    rgb, ocr_regions=ocr_regions, has_camera=has_camera,
+                    rgb,
+                    ocr_regions=ocr_regions,
+                    has_camera=has_camera,
                 )
             animals = _vis.recognize_animals(rgb)
             if animals:
@@ -288,6 +326,7 @@ def _analyze_from_decoded(
     if os.environ.get("SNAPGRADE_ENABLE_SEMANTIC") or "semantic" in enabled:
         try:
             from .metrics import embed as _embed
+
             vec = _embed.compute(rgb)
             if vec is not None:
                 emb_bytes = vec.tobytes()
@@ -311,7 +350,14 @@ def _analyze_from_decoded(
     )
 
 
-def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
+def _persist_row(
+    conn,
+    path: Path,
+    result: AnalysisResult,
+    st_size: int,
+    st_mtime: float,
+    library_id: int | None = None,
+) -> None:
     """Persist a single analysis result. Caller MUST hold an open transaction —
     batched writes amortize per-row commit cost on big-library runs.
 
@@ -348,7 +394,11 @@ def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtim
     db.save_metrics(conn, image_id, result.metrics)
     if result.embedding is not None and result.embedding_model and result.embedding_dim:
         db.save_embedding(
-            conn, image_id, result.embedding_model, result.embedding, result.embedding_dim,
+            conn,
+            image_id,
+            result.embedding_model,
+            result.embedding,
+            result.embedding_dim,
         )
     db.save_verdict(
         conn,
@@ -361,7 +411,14 @@ def _persist_row(conn, path: Path, result: AnalysisResult, st_size: int, st_mtim
     )
 
 
-def _persist(conn, path: Path, result: AnalysisResult, st_size: int, st_mtime: float, library_id: int | None = None) -> None:
+def _persist(
+    conn,
+    path: Path,
+    result: AnalysisResult,
+    st_size: int,
+    st_mtime: float,
+    library_id: int | None = None,
+) -> None:
     """Single-row persist with its own transaction (back-compat path)."""
     with db.transaction(conn):
         _persist_row(conn, path, result, st_size, st_mtime, library_id=library_id)
@@ -390,8 +447,6 @@ def _default_workers() -> int:
 _INFLIGHT_PER_WORKER = 2
 
 
-
-
 def analyze_folder(
     root: Path,
     db_path: Path | None = None,
@@ -404,7 +459,7 @@ def analyze_folder(
     conn = db.connect(db_path) if db_path else db.connect()
     if library_id is None:
         library_id = db.ensure_library(conn, str(root))
-    
+
     # Clear previous import errors for this library before analyzing
     db.clear_ingest_errors(conn, library_id)
 
@@ -458,6 +513,7 @@ def analyze_folder(
     # because native libs already release the GIL during decode/inference.
     use_processes = bool(os.environ.get("SNAPGRADE_USE_PROCESSES"))
     from concurrent.futures import ProcessPoolExecutor, as_completed
+
     PoolCls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
     # Bound in-flight work to cap peak RSS. Submitting all `pending` up front
     # would queue every decoded array in memory; instead we keep ~2× workers

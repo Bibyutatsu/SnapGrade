@@ -364,11 +364,19 @@ def run_library_models(
     return {"started": True, "models": models}
 
 
-_AVAILABLE_MODEL_NAMES = ("scene", "subject_seg", "objects", "depth", "content_type", "semantic")
+_AVAILABLE_MODEL_NAMES = (
+    "scene",
+    "subject_seg",
+    "objects",
+    "depth",
+    "content_type",
+    "semantic",
+    "face_landmarker",
+)
 
 # A few selectable models live in differently-named metric modules; map the
 # UI/API model name to its implementing module for availability probing.
-_MODEL_MODULES = {"semantic": "embed"}
+_MODEL_MODULES = {"semantic": "embed", "face_landmarker": "face_expression"}
 
 # Public URLs for model weights, built from the community model host.
 # The user can override per-request via the `url` query param to /download.
@@ -384,6 +392,10 @@ MODEL_DOWNLOAD_URLS: dict[str, dict[str, str]] = {
     "semantic": {
         "url": f"{_REPO}/mobileclip_s0_image.mlpackage.zip",
         "filename": "mobileclip_s0_image.mlpackage",
+    },
+    "face_landmarker": {
+        "url": f"{_REPO}/face_landmarker.task",
+        "filename": "face_landmarker.task",
     },
     # content_type uses Apple Vision (no download); intentionally absent here.
 }
@@ -573,16 +585,29 @@ def list_folders() -> dict[str, Any]:
 
 
 def _merge_yolo_animals(animals: list, objects_dets: list) -> list:
-    yolo_animals = {"bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"}
+    yolo_animals = {
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+    }
     merged = list(animals or [])
-    for obj in (objects_dets or []):
+    for obj in objects_dets or []:
         if obj.get("class") in yolo_animals:
             if not any(a.get("species") == obj["class"] for a in merged):
-                merged.append({
-                    "species": obj["class"],
-                    "confidence": obj.get("conf", 1.0),
-                    "bbox": obj.get("bbox"),
-                })
+                merged.append(
+                    {
+                        "species": obj["class"],
+                        "confidence": obj.get("conf", 1.0),
+                        "bbox": obj.get("bbox"),
+                    }
+                )
     return merged
 
 
@@ -672,7 +697,7 @@ def list_images(
                 "ocr": json.loads(r["ocr_json"]) if r["ocr_json"] else [],
                 "animals": _merge_yolo_animals(
                     json.loads(r["animals_json"]) if r["animals_json"] else [],
-                    json.loads(r["objects_json"]) if r["objects_json"] else []
+                    json.loads(r["objects_json"]) if r["objects_json"] else [],
                 ),
                 "exposure_time": _fmt_exposure(r["exposure_time"]),
                 "lens": r["lens_model"],
@@ -699,8 +724,7 @@ def get_image(image_id: int) -> dict[str, Any]:
     metrics = json.loads(row["metrics_json"]) if row["metrics_json"] else {}
     if metrics:
         metrics["animals"] = _merge_yolo_animals(
-            metrics.get("animals"),
-            metrics.get("objects", {}).get("detections")
+            metrics.get("animals"), metrics.get("objects", {}).get("detections")
         )
     out["metrics"] = metrics
     out["reasons"] = json.loads(row["reasons"]) if row["reasons"] else []
