@@ -24,6 +24,7 @@
 
 ---
 
+
 ## Status
 
 SnapGrade is ready for local culling workflows. It provides a FastAPI analyzer backend, SQLite metrics cache, CLI commands, and a React-based web dashboard. It features real-time face clustering, burst grouping, visual semantic search, and configurable quality thresholds.
