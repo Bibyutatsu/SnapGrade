@@ -41,6 +41,13 @@ function App() {
     setDataVersion(v => v + 1);
   }, []);
   useEffect(() => { window.SG_REFRESH = refreshData; }, [refreshData]);
+  useEffect(() => {
+    window.SG_REFRESH_UI = () => {
+      setStats({ ...window.SG_DATA.MOCK_STATS });
+      setDataVersion(v => v + 1);
+    };
+    return () => { window.SG_REFRESH_UI = null; };
+  }, []);
   // Poll /api/stats while ingest is running so the sidebar's live indicator and
   // counts reflect reality without a full reload. When an ingest finishes
   // (running flips true → false), do a full SG_DATA refresh so Triage picks up

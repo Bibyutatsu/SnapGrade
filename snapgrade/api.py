@@ -661,6 +661,19 @@ def list_images(
         params.append(content_type)
     if where:
         sql += " WHERE " + " AND ".join(where)
+    
+    # Count total matching query before applying LIMIT and OFFSET
+    count_sql = (
+        "SELECT COUNT(*) AS c "
+        "FROM images i "
+        "LEFT JOIN verdicts v ON v.image_id = i.id "
+        "LEFT JOIN metrics m ON m.image_id = i.id "
+        "LEFT JOIN burst_members bm ON bm.image_id = i.id"
+    )
+    if where:
+        count_sql += " WHERE " + " AND ".join(where)
+    total_count = conn.execute(count_sql, params).fetchone()["c"]
+
     sql += " ORDER BY i.capture_time NULLS LAST, i.id LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = conn.execute(sql, params).fetchall()
@@ -703,7 +716,10 @@ def list_images(
                 "lens": r["lens_model"],
             }
             for r in rows
-        ]
+        ],
+        "total": int(total_count),
+        "limit": limit,
+        "offset": offset,
     }
 
 

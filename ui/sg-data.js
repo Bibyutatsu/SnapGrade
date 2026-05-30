@@ -4,6 +4,7 @@
 
 (function () {
   const API = '';   // same origin as the UI
+  let currentFetchId = 0;
 
   // ── Empty defaults so components that read SG_DATA at parse-time don't crash.
   window.SG_DATA = {
@@ -107,12 +108,55 @@
     };
   }
 
+  async function fetchRemaining(fetchId, startOffset) {
+    let offset = startOffset;
+    const limit = 500;
+    while (true) {
+      if (fetchId !== currentFetchId) break;
+      try {
+        const nextImgs = await jget(`/api/images?limit=${limit}&offset=${offset}`);
+        if (fetchId !== currentFetchId) break;
+        if (!nextImgs.items || nextImgs.items.length === 0) break;
+        const newShaped = nextImgs.items.map(shapeImage);
+        window.SG_DATA.MOCK_IMAGES.push(...newShaped);
+
+        // Rebuild MOCK_BURSTS
+        const burstMap = new Map();
+        for (const img of window.SG_DATA.MOCK_IMAGES) {
+          if (img.burst_id == null) continue;
+          if (!burstMap.has(img.burst_id)) burstMap.set(img.burst_id, []);
+          burstMap.get(img.burst_id).push(img);
+        }
+        window.SG_DATA.MOCK_BURSTS = [...burstMap.entries()]
+          .filter(([, images]) => images.length >= 2)
+          .map(([burst_id, images]) => ({ burst_id, count: images.length, images }))
+          .sort((a, b) => a.burst_id - b.burst_id);
+
+        // Update stats count dynamically
+        window.SG_DATA.MOCK_STATS.images = window.SG_DATA.MOCK_IMAGES.length;
+        window.SG_DATA.MOCK_STATS.bursts = window.SG_DATA.MOCK_BURSTS.length;
+
+        // Notify React UI to re-render
+        if (window.SG_REFRESH_UI) window.SG_REFRESH_UI();
+
+        if (nextImgs.items.length < limit) break;
+        offset += limit;
+      } catch (err) {
+        console.error('[SnapGrade] background fetch failed:', err);
+        break;
+      }
+    }
+  }
+
   // ── Bootstrap: fetch everything in parallel ────────────────────────────────
   async function bootstrap() {
+    currentFetchId++;
+    const fetchId = currentFetchId;
+
     const [stats, libs, imgs, bursts, tokens] = await Promise.all([
       jget('/api/stats').catch(() => null),
       jget('/api/libraries').catch(() => ({ items: [] })),
-      jget('/api/images?limit=2000').catch(() => ({ items: [] })),
+      jget('/api/images?limit=500').catch(() => ({ items: [] })),
       jget('/api/bursts').catch(() => ({ items: [] })),
       jget('/api/tokens').catch(() => ({ tokens: [] })),
     ]);
@@ -153,12 +197,16 @@
           'gps:country','gps:city','event',
         ];
 
-    // Face clusters: no API yet — keep empty. The Faces screen renders an
-    // empty-state with the `snapgrade faces` hint.
     window.SG_DATA = {
       MOCK_IMAGES, MOCK_LIBRARIES, MOCK_BURSTS,
       MOCK_CLUSTERS: [], MOCK_STATS, ORGANIZE_TOKENS,
     };
+
+    // Trigger progressive background fetch if there are more images to load
+    const hasMore = (imgs.items && imgs.items.length === 500) || (stats && stats.images > MOCK_IMAGES.length);
+    if (hasMore) {
+      fetchRemaining(fetchId, MOCK_IMAGES.length);
+    }
   }
 
   // ── Public API used by screen components ───────────────────────────────────
