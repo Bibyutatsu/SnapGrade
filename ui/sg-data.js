@@ -244,6 +244,19 @@
       const r = await jpost('/api/select_folder');
       return r.paths || [];
     },
+    async pickPhotosLibrary() {
+      const r = await jpost('/api/select_photos_library');
+      return r.paths || [];
+    },
+    getDuplicates() {
+      return jget('/api/duplicates');
+    },
+    emptyTrash() {
+      return jpost('/api/trash/empty');
+    },
+    restoreTrash() {
+      return jpost('/api/trash/restore');
+    },
     ingest(folders, models) {
       return jpost('/api/ingest', { folders, models: models || [] });
     },

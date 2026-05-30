@@ -1324,6 +1324,232 @@ def write_xmp_endpoint(image_id: int) -> dict[str, Any]:
     return {"sidecar": str(out)}
 
 
+@app.post("/api/select_photos_library", dependencies=[Depends(require_local)])
+def select_photos_library() -> dict[str, Any]:
+    from pathlib import Path
+    default_path = Path("~/Pictures/Photos Library.photoslibrary").expanduser()
+    if default_path.exists():
+        return {"paths": [str(default_path)]}
+
+    pictures_dir = Path("~/Pictures").expanduser()
+    if pictures_dir.exists():
+        for item in pictures_dir.iterdir():
+            if item.suffix.lower() == ".photoslibrary":
+                return {"paths": [str(item)]}
+
+    return {"paths": [str(default_path)]}
+
+
+@app.get("/api/duplicates")
+def get_duplicates_endpoint() -> dict[str, Any]:
+    conn = _conn()
+    try:
+        from .group import detect_cross_library_duplicates
+        groups = detect_cross_library_duplicates(conn)
+        return {"groups": groups}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to detect duplicates: {e}")
+
+
+@app.post("/api/trash/empty", dependencies=[Depends(require_local)])
+async def empty_trash_endpoint() -> dict[str, Any]:
+    import sys
+    if sys.platform != "darwin":
+        raise HTTPException(501, "Trash integration requires macOS")
+
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT i.id, i.path FROM images i JOIN verdicts v ON v.image_id = i.id WHERE v.verdict = 'reject'"
+    ).fetchall()
+
+    if not rows:
+        return {"count": 0, "status": "no_rejected_images"}
+
+    from pathlib import Path
+    from .pipeline import _live_photo_video
+    from datetime import datetime
+
+    paths_to_trash = []
+    metadata_map = {}
+    image_ids = []
+    skipped_count = 0
+
+    for r in rows:
+        p = Path(r["path"])
+        # Check if the photo is part of a photos library
+        if ".photoslibrary" in str(p.resolve()):
+            skipped_count += 1
+            continue
+
+        image_ids.append(int(r["id"]))
+
+        # Capture metadata for restoration
+        img_id = int(r["id"])
+        img_row = conn.execute("SELECT * FROM images WHERE id=?", (img_id,)).fetchone()
+        metrics_row = conn.execute("SELECT json FROM metrics WHERE image_id=?", (img_id,)).fetchone()
+        verdict_row = conn.execute("SELECT * FROM verdicts WHERE image_id=?", (img_id,)).fetchone()
+
+        metadata = {
+            "image": dict(img_row) if img_row else None,
+            "metrics": json.loads(metrics_row["json"]) if (metrics_row and metrics_row["json"]) else None,
+            "verdict": dict(verdict_row) if verdict_row else None,
+        }
+
+        if p.exists():
+            paths_to_trash.append(str(p.resolve()))
+            metadata_map[str(p.resolve())] = metadata
+
+        # Sibling Live Photo video check
+        sibling = _live_photo_video(p)
+        if sibling and sibling.exists():
+            paths_to_trash.append(str(sibling.resolve()))
+
+    if not paths_to_trash:
+        if image_ids:
+            with db.transaction(conn):
+                placeholders = ",".join("?" for _ in image_ids)
+                conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", image_ids)
+            db.cleanup_orphan_bursts(conn)
+        return {"count": len(image_ids), "status": "files_not_found_cleaned_db", "skipped_photoslibrary": skipped_count}
+
+    from AppKit import NSWorkspace
+    from Foundation import NSURL, NSAutoreleasePool
+
+    pool = NSAutoreleasePool.alloc().init()
+    try:
+        workspace = NSWorkspace.sharedWorkspace()
+        urls = [NSURL.fileURLWithPath_(p) for p in paths_to_trash]
+
+        trash_dir = Path("~/.Trash").expanduser()
+        now = datetime.now().isoformat()
+
+        with db.transaction(conn):
+            for orig_p_str, meta in metadata_map.items():
+                orig_p = Path(orig_p_str)
+                trash_p = trash_dir / orig_p.name
+                conn.execute(
+                    "INSERT INTO trash_history (original_path, trash_path, metadata_json, trashed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (orig_p_str, str(trash_p), json.dumps(meta), now)
+                )
+
+        workspace.recycleURLs_completionHandler_(urls, None)
+
+        with db.transaction(conn):
+            placeholders = ",".join("?" for _ in image_ids)
+            conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", image_ids)
+        db.cleanup_orphan_bursts(conn)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to recycle files: {e}")
+    finally:
+        del pool
+
+    return {"count": len(image_ids), "trashed_files": len(paths_to_trash), "skipped_photoslibrary": skipped_count}
+
+
+def find_in_trash(expected_path: Path) -> Path | None:
+    if expected_path.exists():
+        return expected_path
+    trash_dir = expected_path.parent
+    name_stem = expected_path.stem
+    suffix = expected_path.suffix
+    candidates = []
+    if trash_dir.exists():
+        for item in trash_dir.iterdir():
+            if item.is_file() and item.name.startswith(name_stem) and item.suffix.lower() == suffix.lower():
+                candidates.append(item)
+    if candidates:
+        candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        return candidates[0]
+    return None
+
+
+@app.post("/api/trash/restore", dependencies=[Depends(require_local)])
+def restore_trash_endpoint() -> dict[str, Any]:
+    import sys
+    if sys.platform != "darwin":
+        raise HTTPException(501, "Trash integration requires macOS")
+
+    conn = _conn()
+    rows = conn.execute(
+        "SELECT id, original_path, trash_path, metadata_json FROM trash_history ORDER BY id DESC"
+    ).fetchall()
+
+    if not rows:
+        return {"count": 0, "status": "nothing_to_restore"}
+
+    restored_count = 0
+    from pathlib import Path
+    from .pipeline import _live_photo_video
+
+    with db.transaction(conn):
+        for r in rows:
+            orig_p = Path(r["original_path"])
+            trash_p = Path(r["trash_path"])
+
+            resolved_trash_p = find_in_trash(trash_p)
+            if resolved_trash_p and resolved_trash_p.exists():
+                orig_p.parent.mkdir(parents=True, exist_ok=True)
+                resolved_trash_p.rename(orig_p)
+
+                sibling_orig = _live_photo_video(orig_p)
+                if sibling_orig:
+                    sibling_trash_expected = trash_p.parent / sibling_orig.name
+                    resolved_sibling_trash = find_in_trash(sibling_trash_expected)
+                    if resolved_sibling_trash and resolved_sibling_trash.exists():
+                        resolved_sibling_trash.rename(sibling_orig)
+
+                metadata = json.loads(r["metadata_json"])
+
+                img_fields = metadata.get("image")
+                if img_fields:
+                    cols = list(img_fields.keys())
+                    placeholders = ",".join("?" for _ in cols)
+                    setters = ",".join(f"{c}=excluded.{c}" for c in cols if c != "path")
+                    sql = (
+                        f"INSERT INTO images ({','.join(cols)}) VALUES ({placeholders}) "
+                        f"ON CONFLICT(path) DO UPDATE SET {setters}"
+                    )
+                    conn.execute(sql, [img_fields[c] for c in cols])
+
+                    img_row = conn.execute("SELECT id FROM images WHERE path=?", (img_fields["path"],)).fetchone()
+                    img_id = int(img_row["id"])
+
+                    metrics_json = metadata.get("metrics")
+                    if metrics_json:
+                        conn.execute(
+                            "INSERT INTO metrics(image_id, json) VALUES(?, ?) "
+                            "ON CONFLICT(image_id) DO UPDATE SET json=excluded.json",
+                            (img_id, json.dumps(metrics_json))
+                        )
+
+                    verdict_fields = metadata.get("verdict")
+                    if verdict_fields:
+                        conn.execute(
+                            "INSERT INTO verdicts(image_id, verdict, stars, label, reasons, warnings, user_override) "
+                            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(image_id) DO UPDATE SET "
+                            "  verdict=excluded.verdict, stars=excluded.stars, label=excluded.label, "
+                            "  reasons=excluded.reasons, warnings=excluded.warnings, user_override=excluded.user_override",
+                            (
+                                img_id,
+                                verdict_fields["verdict"],
+                                verdict_fields["stars"],
+                                verdict_fields["label"],
+                                verdict_fields.get("reasons", "[]"),
+                                verdict_fields.get("warnings", "[]"),
+                                verdict_fields.get("user_override", 0),
+                            )
+                        )
+
+                conn.execute("DELETE FROM trash_history WHERE id=?", (r["id"],))
+                restored_count += 1
+            else:
+                conn.execute("DELETE FROM trash_history WHERE id=?", (r["id"],))
+
+    db.cleanup_orphan_bursts(conn)
+    return {"count": restored_count}
+
+
 # Serve the static UI last so /api/* routes win.
 if UI_DIR.exists():
     app.mount("/", StaticFiles(directory=str(UI_DIR), html=True), name="ui")

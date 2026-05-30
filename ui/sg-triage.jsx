@@ -1213,6 +1213,38 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
     flashTimer.current = setTimeout(() => setFlash(null), 450);
   }, []);
 
+  const [emptyTrashOpen, setEmptyTrashOpen] = useState(false);
+  const [canRestore, setCanRestore] = useState(() => !!window.SG_CAN_RESTORE);
+
+  const handleEmptyTrash = useCallback(async () => {
+    setEmptyTrashOpen(false);
+    showFlash('Emptying Trash...');
+    try {
+      const res = await window.SG_API.emptyTrash();
+      showFlash(`Trashed ${res.count} photo(s)`);
+      if (res.count > 0) {
+        window.SG_CAN_RESTORE = true;
+        setCanRestore(true);
+      }
+      await window.SG_REFRESH?.();
+    } catch (e) {
+      showFlash(`Failed: ${e.message}`);
+    }
+  }, [showFlash]);
+
+  const handleRestoreTrash = useCallback(async () => {
+    showFlash('Restoring...');
+    try {
+      const res = await window.SG_API.restoreTrash();
+      showFlash(`Restored ${res.count} photo(s)`);
+      window.SG_CAN_RESTORE = false;
+      setCanRestore(false);
+      await window.SG_REFRESH?.();
+    } catch (e) {
+      showFlash(`Failed: ${e.message}`);
+    }
+  }, [showFlash]);
+
   const upd = useCallback((k, v) => setFilters(prev => ({...prev, [k]: v})), []);
 
   // Active count (excluding verdict which is in filterbar)
@@ -1482,6 +1514,64 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
           <span style={{color:'var(--c-keeper)',fontVariantNumeric:'tabular-nums'}}>{stripStats.keep}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>keep</em></span>
           <span style={{color:'var(--c-amber)',fontVariantNumeric:'tabular-nums'}}>{stripStats.review}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>review</em></span>
           <span style={{color:'var(--c-danger)',fontVariantNumeric:'tabular-nums'}}>{stripStats.reject}<em style={{fontSize:'var(--cap-size)',letterSpacing:'0.18em',textTransform:'uppercase',fontStyle:'normal',color:'var(--c-mute)',marginLeft:4}}>reject</em></span>
+          {stripStats.reject > 0 && (
+            <button
+              onClick={() => setEmptyTrashOpen(true)}
+              style={{
+                marginLeft: 10,
+                background: 'rgba(235, 87, 87, 0.1)',
+                border: '1px solid var(--c-danger)',
+                color: 'var(--c-danger)',
+                padding: '2px 8px',
+                fontSize: 10,
+                borderRadius: 'var(--radius)',
+                cursor: 'pointer',
+                fontFamily: 'var(--font-ui)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                transition: 'all 0.12s'
+              }}
+              onMouseEnter={e => {
+                e.target.style.background = 'var(--c-danger)';
+                e.target.style.color = 'white';
+              }}
+              onMouseLeave={e => {
+                e.target.style.background = 'rgba(235, 87, 87, 0.1)';
+                e.target.style.color = 'var(--c-danger)';
+              }}
+            >
+              Empty Trash
+            </button>
+          )}
+          {canRestore && (
+            <button
+              onClick={handleRestoreTrash}
+              style={{
+                marginLeft: 6,
+                background: 'rgba(46, 204, 113, 0.1)',
+                border: '1px solid var(--c-keeper)',
+                color: 'var(--c-keeper)',
+                padding: '2px 8px',
+                fontSize: 10,
+                borderRadius: 'var(--radius)',
+                cursor: 'pointer',
+                fontFamily: 'var(--font-ui)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                transition: 'all 0.12s'
+              }}
+              onMouseEnter={e => {
+                e.target.style.background = 'var(--c-keeper)';
+                e.target.style.color = 'white';
+              }}
+              onMouseLeave={e => {
+                e.target.style.background = 'rgba(46, 204, 113, 0.1)';
+                e.target.style.color = 'var(--c-keeper)';
+              }}
+            >
+              Undo Empty Trash
+            </button>
+          )}
 
           <div style={{width:1,background:'var(--c-border)',height:18,margin:'0 4px',flexShrink:0}}/>
 
@@ -1605,6 +1695,18 @@ function TriageScreen({ layout, setLayout, activeLib, setActiveLib, panelOpen, s
                       animation:'sg-fade .12s ease-out' }}>
           {flash}
         </div>
+      )}
+
+      {emptyTrashOpen && (
+        <ConfirmModal
+          open={emptyTrashOpen}
+          title="Empty Trash"
+          body={`Are you sure you want to move all ${stripStats.reject} rejected photo(s) (and any iOS/Android Live Photo sibling video files) to the macOS Trash?`}
+          confirmLabel="Empty Trash"
+          danger={true}
+          onConfirm={handleEmptyTrash}
+          onCancel={() => setEmptyTrashOpen(false)}
+        />
       )}
     </div>
   );

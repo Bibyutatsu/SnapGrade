@@ -132,6 +132,7 @@ function App() {
                                                     activeLib={activeLib} setActiveLib={setActiveLib}
                                                     panelOpen={panelOpen} setPanelOpen={setPanelOpen} />}
             {tab === 'bursts'   && <BurstsScreen   key={`bur-${dataVersion}`} />}
+            {tab === 'duplicates' && <DuplicatesScreen key={`dup-${dataVersion}`} />}
             {tab === 'faces'    && <FacesScreen    key={`fac-${dataVersion}`} />}
             {tab === 'xmp'      && <XMPExportScreen key={`xmp-${dataVersion}`} />}
             {tab === 'organize' && <OrganizeScreen />}

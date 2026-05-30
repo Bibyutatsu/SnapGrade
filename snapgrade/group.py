@@ -210,3 +210,63 @@ def group_bursts(
                 )
             )
     return bursts
+
+
+def detect_cross_library_duplicates(conn: sqlite3.Connection, hamming_threshold: int = 10) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT i.id, i.path, i.content_hash, i.library_id, l.display_name AS library_name, "
+        "       v.verdict, v.stars, v.label, i.phash "
+        "FROM images i "
+        "LEFT JOIN libraries l ON l.id = i.library_id "
+        "LEFT JOIN verdicts v ON v.image_id = i.id "
+        "WHERE i.phash IS NOT NULL"
+    ).fetchall()
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": int(r["id"]),
+            "path": r["path"],
+            "content_hash": r["content_hash"],
+            "library_id": r["library_id"],
+            "library_name": r["library_name"] or "Unknown",
+            "verdict": r["verdict"] or "review",
+            "stars": r["stars"] if r["stars"] is not None else 0,
+            "label": r["label"] or "yellow",
+            "phash": r["phash"],
+        })
+
+    n = len(items)
+    if n == 0:
+        return []
+
+    uf = _UnionFind(n)
+    for i in range(n):
+        a = items[i]
+        for j in range(i + 1, n):
+            b = items[j]
+            # Near-duplicate if hamming distance <= threshold
+            if hamming(a["phash"], b["phash"]) <= hamming_threshold:
+                uf.union(i, j)
+
+    components: dict[int, list[int]] = {}
+    for idx in range(n):
+        components.setdefault(uf.find(idx), []).append(idx)
+
+    report_groups = []
+    for comp_id, idxs in components.items():
+        if len(idxs) < 2:
+            continue
+        group_items = [items[idx] for idx in idxs]
+        # Check if the group spans multiple libraries
+        lib_ids = {itm["library_id"] for itm in group_items if itm["library_id"] is not None}
+        if len(lib_ids) >= 2:
+            # Remove phash from final JSON output to keep response size optimal
+            for itm in group_items:
+                itm.pop("phash", None)
+            report_groups.append({
+                "group_id": comp_id,
+                "images": group_items
+            })
+
+    return report_groups

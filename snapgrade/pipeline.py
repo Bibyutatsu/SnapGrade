@@ -68,10 +68,81 @@ class AnalysisResult:
     embedding_dim: int | None = None
 
 
+def walk_photos_library_fs(root: Path) -> Iterator[Path]:
+    for sub in ("originals", "Masters"):
+        sub_dir = root / sub
+        if sub_dir.exists() and sub_dir.is_dir():
+            for p in sub_dir.rglob("*"):
+                if p.is_file() and decode.is_supported(p):
+                    yield p
+
+
+def walk_photos_library_photokit() -> list[Path]:
+    try:
+        import Photos
+        from Foundation import NSAutoreleasePool
+    except ImportError as e:
+        log.warning("Could not import Photos/Foundation: %s", e)
+        return []
+
+    pool = NSAutoreleasePool.alloc().init()
+    paths = []
+    try:
+        status = Photos.PHPhotoLibrary.authorizationStatus()
+        if status in (3, 4):  # PHAuthorizationStatusAuthorized or PHAuthorizationStatusLimited
+            options = Photos.PHFetchOptions.alloc().init()
+            options.setSortDescriptors_([
+                Photos.NSSortDescriptor.sortDescriptorWithKey_ascending_("creationDate", True)
+            ])
+            assets = Photos.PHAsset.fetchAssetsWithOptions_(options)
+            for i in range(assets.count()):
+                asset = assets.objectAtIndex_(i)
+                resources = Photos.PHAssetResource.assetResourcesForAsset_(asset)
+                if resources:
+                    for r_idx in range(resources.count()):
+                        res = resources.objectAtIndex_(r_idx)
+                        try:
+                            purl = res.valueForKey_("privateFileURL")
+                            if purl:
+                                path_str = purl.path()
+                                if path_str:
+                                    p = Path(path_str)
+                                    if p.exists() and p.is_file():
+                                        paths.append(p)
+                        except Exception:
+                            pass
+    except Exception as e:
+        log.warning("PhotoKit retrieval failed: %s", e)
+    finally:
+        del pool
+    return paths
+
+
 def walk_images(root: Path) -> Iterator[Path]:
-    for p in root.rglob("*"):
-        if p.is_file() and decode.is_supported(p):
+    if root.suffix.lower() == ".photoslibrary" or ".photoslibrary/" in str(root) or ".photoslibrary\\" in str(root):
+        lib_root = root
+        while lib_root.parent and lib_root.suffix.lower() != ".photoslibrary":
+            lib_root = lib_root.parent
+
+        photokit_paths = []
+        try:
+            photokit_paths = walk_photos_library_photokit()
+        except Exception as e:
+            log.warning("Failed to walk Photos library via PhotoKit: %s", e)
+
+        if photokit_paths:
+            for p in photokit_paths:
+                if decode.is_supported(p):
+                    yield p
+            return
+
+        # Fallback to filesystem
+        for p in walk_photos_library_fs(lib_root):
             yield p
+    else:
+        for p in root.rglob("*"):
+            if p.is_file() and decode.is_supported(p):
+                yield p
 
 
 _HASH_VERSION = "v2"
