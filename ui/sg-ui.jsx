@@ -21,6 +21,7 @@ const TABS = [
   ["library",  "Library",       "Lib"],
   ["triage",   "Triage",        "Tri"],
   ["bursts",   "Bursts",        "Brst"],
+  ["duplicates", "Duplicates",  "Dupl"],
   ["faces",    "Face Clusters", "Face"],
   ["xmp",      "XMP Export",    "XMP"],
   ["organize", "Organize",      "Org"],

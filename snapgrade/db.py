@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS ingest_errors (
     error TEXT NOT NULL,
     failed_at TEXT NOT NULL
 );
+
+-- Stores metadata of recently trashed files to support local restoration.
+CREATE TABLE IF NOT EXISTS trash_history (
+    id INTEGER PRIMARY KEY,
+    original_path TEXT NOT NULL,
+    trash_path TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    trashed_at TEXT NOT NULL
+);
 """
 
 

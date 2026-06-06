@@ -166,6 +166,16 @@ function LibraryScreen({ stats, setTab }) {
     } catch (e) { setMsg(`folder picker failed: ${e.message}`); }
   }
 
+  async function pickPhotosLibrary() {
+    setMsg('');
+    try {
+      const picked = await window.SG_API.pickPhotosLibrary();
+      if (picked && picked.length) {
+        setFolders(prev => [...prev, ...picked.filter(p => !prev.includes(p))]);
+      }
+    } catch (e) { setMsg(`Photos library picker failed: ${e.message}`); }
+  }
+
   // Poll /api/stats.ingest until it goes idle, then resolve. Used to chain
   // /api/group and /api/faces/run after the ingest BackgroundTask finishes.
   function waitForIngestIdle(timeoutMs = 30 * 60 * 1000) {
@@ -389,6 +399,7 @@ function LibraryScreen({ stats, setTab }) {
               {folders.length ? `${folders.length} folder${folders.length === 1 ? '' : 's'} queued` : 'no folder selected'}
             </div>
             <Btn variant="ghost" onClick={pickFolder}>Choose folder…</Btn>
+            <Btn variant="ghost" onClick={pickPhotosLibrary}>Open Photos Library</Btn>
             <Btn variant="primary" disabled={!folders.length} onClick={develop}>Develop</Btn>
           </div>
           <div className="sg-model-checklist">
@@ -1459,4 +1470,198 @@ function FaceClusterSettings() {
   );
 }
 
-Object.assign(window, { LibraryScreen, BurstsScreen, FacesScreen, XMPExportScreen, OrganizeScreen, SettingsScreen });
+function DuplicatesScreen() {
+  const [groups, setGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [verdictMsg, setVerdictMsg] = useState('');
+
+  const fetchDuplicates = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await window.SG_API.getDuplicates();
+      setGroups(res.groups || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDuplicates();
+  }, [fetchDuplicates]);
+
+  async function handleVerdict(imageId, verdict) {
+    try {
+      await window.SG_API.verdict(imageId, { verdict, stars: verdict === 'reject' ? 0 : 3, label: verdict === 'reject' ? 'red' : 'green' });
+      // Update local state instead of full refetch for immediate feedback
+      setGroups(prev => prev.map(g => ({
+        ...g,
+        images: g.images.map(img => img.id === imageId ? { ...img, verdict } : img)
+      })));
+      setVerdictMsg(`Marked image as ${verdict}`);
+      setTimeout(() => setVerdictMsg(''), 3000);
+      window.SG_REFRESH_UI?.();
+    } catch (e) {
+      setVerdictMsg(`Failed: {e.message}`);
+    }
+  }
+
+  async function handleReveal(imageId) {
+    try {
+      await window.SG_API.reveal(imageId);
+    } catch (e) {
+      alert(`Reveal failed: ${e.message}`);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display:'flex', flex:1, alignItems:'center', justifyContent:'center', color:'var(--c-text)' }}>
+        <div style={{ fontSize:14, display:'flex', alignItems:'center', gap:10, fontFamily:'var(--font-ui)', letterSpacing:'0.05em', textTransform:'uppercase' }}>
+          Detecting near-duplicates across libraries...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ display:'flex', flex:1, flexDirection:'column', alignItems:'center', justifyContent:'center', color:'var(--c-danger)', gap:10 }}>
+        <h3>Error detecting duplicates</h3>
+        <p style={{ color:'var(--c-text2)', fontSize:13 }}>{error}</p>
+        <Btn onClick={fetchDuplicates}>Retry</Btn>
+      </div>
+    );
+  }
+
+  const totalDuplicateImages = groups.reduce((acc, g) => acc + g.images.length, 0);
+  const totalLibraries = new Set(groups.flatMap(g => g.images.map(i => i.library_id))).size;
+
+  return (
+    <div style={{ display:'flex', flex:1, flexDirection:'column', overflow:'hidden', padding:24, gap:20 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
+        <div>
+          <h1 style={{ margin:0, fontSize:20, fontWeight:600, color:'var(--c-text)', fontFamily:'var(--font-ui)', letterSpacing:'-0.01em' }}>Cross-Library Duplicates</h1>
+          <p style={{ margin:'4px 0 0', color:'var(--c-mute)', fontSize:12, fontFamily:'var(--font-ui)' }}>
+            Detecting images with similar contents (phash hamming distance ≤ 10) spread across different folders/libraries.
+          </p>
+        </div>
+        <Btn onClick={fetchDuplicates}>Refresh Report</Btn>
+      </div>
+
+      {verdictMsg && (
+        <div style={{ background:'rgba(193,68,14,0.1)', color:'var(--c-accent)', padding:'8px 16px', borderRadius:'var(--radius)', fontSize:12, fontFamily:'var(--font-ui)' }}>
+          {verdictMsg}
+        </div>
+      )}
+
+      {groups.length === 0 ? (
+        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', border:'2px dashed var(--c-border)', borderRadius:'var(--radius)', color:'var(--c-mute)', gap:10 }}>
+          <span style={{ fontSize:32 }}>🎉</span>
+          <h3 style={{ margin:0, color:'var(--c-text)', fontWeight:600 }}>No Cross-Library Duplicates Found</h3>
+          <p style={{ margin:0, fontSize:12 }}>All your libraries are clean of cross-library duplicate sets.</p>
+        </div>
+      ) : (
+        <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', gap:20, paddingRight:6 }}>
+          <div style={{ background:'rgba(193,68,14,0.06)', border:'1px solid var(--c-border2)', padding:12, borderRadius:'var(--radius)', fontSize:12, color:'var(--c-text2)', fontFamily:'var(--font-ui)' }}>
+            Found <strong>{groups.length} duplicate groups</strong> containing <strong>{totalDuplicateImages} near-identical images</strong> spread across <strong>{totalLibraries} libraries</strong>.
+          </div>
+
+          {groups.map((g, idx) => {
+            const groupLibraries = Array.from(new Set(g.images.map(img => img.library_name))).join(', ');
+            return (
+              <div key={g.group_id || idx} style={{ border:'1px solid var(--c-border)', borderRadius:'var(--radius)', background:'var(--c-card-bg)', overflow:'hidden' }}>
+                <div style={{ background:'var(--c-border2)', padding:'10px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', borderBottom:'1px solid var(--c-border)', fontFamily:'var(--font-ui)' }}>
+                  <span style={{ fontWeight:600, fontSize:12, color:'var(--c-text)', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                    Group #{idx + 1}
+                  </span>
+                  <span style={{ fontSize:11, color:'var(--c-mute)' }}>
+                    Spread across: <strong style={{ color:'var(--c-text)' }}>{groupLibraries}</strong>
+                  </span>
+                </div>
+                
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:16, padding:16 }}>
+                  {g.images.map(img => {
+                    const bust = img.content_hash ? `&h=${img.content_hash.slice(-8)}` : '';
+                    const thumbUrl = `/api/images/${img.id}/thumb?size=420${bust}`;
+                    
+                    return (
+                      <div key={img.id} style={{ display:'flex', flexDirection:'column', border:'1px solid var(--c-border2)', borderRadius:'var(--radius)', overflow:'hidden', background:'var(--c-bg)' }}>
+                        <div style={{ position:'relative', height:180, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.2)', borderBottom:'1px solid var(--c-border2)' }}>
+                          <img 
+                            src={thumbUrl} 
+                            alt="Duplicate candidate"
+                            style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}
+                          />
+                          {img.verdict === 'keeper' && (
+                            <span style={{ position:'absolute', top:8, left:8, background:'var(--c-keeper)', color:'white', fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:4, textTransform:'uppercase' }}>
+                              Keeper
+                            </span>
+                          )}
+                          {img.verdict === 'reject' && (
+                            <span style={{ position:'absolute', top:8, left:8, background:'var(--c-danger)', color:'white', fontSize:9, fontWeight:700, padding:'2px 6px', borderRadius:4, textTransform:'uppercase' }}>
+                              Reject
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div style={{ padding:12, flex:1, display:'flex', flexDirection:'column', gap:8 }}>
+                          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                            <span style={{ fontSize:10, color:'var(--c-accent)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.05em', fontFamily:'var(--font-ui)' }}>
+                              {img.library_name}
+                            </span>
+                            <span 
+                              style={{ fontSize:12, color:'var(--c-text)', wordBreak:'break-all', fontFamily:'monospace' }}
+                              title={img.path}
+                            >
+                              {img.path.split('/').pop()}
+                            </span>
+                          </div>
+                          
+                          <div style={{ fontSize:11, color:'var(--c-mute)', display:'flex', flexDirection:'column', gap:2, fontFamily:'var(--font-ui)' }}>
+                            <span style={{ wordBreak:'break-all' }}>Path: {img.path}</span>
+                            <span>Rating: <span style={{ color:'var(--c-amber)' }}>{'★'.repeat(img.stars)}</span>{'·'.repeat(5 - img.stars)}</span>
+                          </div>
+                          
+                          <div style={{ marginTop:'auto', paddingTop:8, borderTop:'1px solid var(--c-border2)', display:'flex', gap:6 }}>
+                            <Btn 
+                              variant={img.verdict === 'keeper' ? 'primary' : 'ghost'} 
+                              onClick={() => handleVerdict(img.id, 'keeper')}
+                              style={{ flex: 1, fontSize: 10, padding: '4px 8px' }}
+                            >
+                              Keeper
+                            </Btn>
+                            <Btn 
+                              variant={img.verdict === 'reject' ? 'danger' : 'ghost'} 
+                              onClick={() => handleVerdict(img.id, 'reject')}
+                              style={{ flex: 1, fontSize: 10, padding: '4px 8px' }}
+                            >
+                              Reject
+                            </Btn>
+                            <Btn 
+                              variant="ghost" 
+                              onClick={() => handleReveal(img.id)}
+                              style={{ fontSize: 10, padding: '4px 8px' }}
+                              title="Reveal in Finder"
+                            >
+                              🔍
+                            </Btn>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { LibraryScreen, BurstsScreen, DuplicatesScreen, FacesScreen, XMPExportScreen, OrganizeScreen, SettingsScreen });
